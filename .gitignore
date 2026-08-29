@@ -23,3 +23,7 @@ compile_commands.json
 
 # Artefacts from running KDE CI locally
 kde-ci-reports/*
+
+# vibecut local build artifacts (root-level flatpak-builder invocation)
+/.flatpak-builder/
+/build.log
