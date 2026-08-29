@@ -72,3 +72,14 @@ Handed the build off to a fully-detached process (`setsid nohup`,
 reparented to PID 1) before closing out this session, specifically so a
 multi-hour compile survives a Claude Code restart. See `CLAUDE.md` for
 the full operational handover notes.
+
+**Build finished clean.** Installed locally (`flatpak-builder --install`)
+and confirmed it actually runs: `flatpak run org.kde.kdenlive//master`
+reports `kdenlive 26.11.70`. Shows up in app launchers (wofi etc.) as
+"Kdenlive (Nightly)" — the manifest's `desktop-file-name-suffix` keeps it
+distinct from any stock Kdenlive install. First milestone done: we have
+a working build of our own fork to actually develop against.
+
+Next: the noise-removal proof of concept (chat dock panel + smallest
+possible Native-mode command surface calling the existing RNNoise
+effect).
