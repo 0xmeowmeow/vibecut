@@ -4,7 +4,11 @@ Read this first. `DEVLOG.md` in this same directory has the fuller
 narrative/build-in-public version of the same history — this file is the
 operational "pick up where we left off" doc. `DESIGN_SPECS.md` is the
 standing rules doc for the agent/panel itself — read it before adding a
-tool or touching the agent loop.
+tool or touching the agent loop. `KDENLIVE_INTERNALS.md` is reference
+notes on the specific upstream Kdenlive subsystems already reverse
+engineered (effects, subtitles, audio export, the Python plugin install
+state machine) — check it before re-deriving one from scratch, and add
+to it when a new subsystem gets touched.
 
 ## What this project is
 
