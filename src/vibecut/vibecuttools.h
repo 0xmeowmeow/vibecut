@@ -10,16 +10,24 @@
 #include <QObject>
 #include <QString>
 
+class SpeechToTextWhisper;
+
 /** @brief Native-mode tool surface exposed to the assistant.
  *
  * Modelled on vibecad's per-tool service contract: each tool has a JSON
  * Schema spec (name, description, input_schema) and a handler that returns
  * `{"ok": bool, ...}` — on failure `{"ok": false, "error": "..."}`.
  *
- * The surface is deliberately tiny for the first proof of concept: read the
- * timeline, read the selection, apply one allowlisted effect, ask the user a
- * question. It is meant to grow one reviewed entry at a time, never to become a
- * generic "run any command" bridge.
+ * The goal is for the chat panel to be able to drive Kdenlive the way
+ * Windsurf/Claude Code drive a codebase — broad real capability, not a
+ * narrow menu bolted on one button at a time. Concretely: tools call
+ * Kdenlive's own internal operations directly (including things like its own
+ * Python/pip installer for optional features, see the speech_* tools) rather
+ * than pointing the user at a Settings dialog. That's a different boundary
+ * than a raw "run any shell command" bridge, which stays out of scope here
+ * (that escape hatch belongs to VibeScript, not Native mode) — but within
+ * "things Kdenlive itself can already do," the tool surface should grow
+ * freely rather than being gatekept per capability.
  *
  * All handlers run on the GUI thread (the agent marshals calls here), so they
  * may touch pCore / the timeline model directly.
@@ -47,10 +55,22 @@ public:
 Q_SIGNALS:
     /** Emitted when the model calls the ask_user tool. */
     void userQuestionRaised(const QString &question);
+    /** Out-of-band progress for a long-running background operation (speech
+     *  setup, model download, ...). Not tied to any particular tool call /
+     *  agent turn — the dock shows these live as they arrive. */
+    void backgroundProgress(const QString &message);
 
 private:
     QJsonObject toolListClips();
     QJsonObject toolGetSelection();
     QJsonObject toolApplyEffect(const QJsonObject &input);
     QJsonObject toolAskUser(const QJsonObject &input);
+    QJsonObject toolSpeechStatus();
+    QJsonObject toolSpeechSetup(const QJsonObject &input);
+
+    SpeechToTextWhisper *whisperEngine();
+    void continueSpeechSetup(const QString &model);
+
+    SpeechToTextWhisper *m_whisper = nullptr;
+    QString m_pendingModel; // non-empty while waiting for deps before downloading a model
 };

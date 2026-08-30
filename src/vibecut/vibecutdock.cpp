@@ -135,6 +135,9 @@ VibeCutDock::VibeCutDock(QWidget *parent)
     connect(m_agent, &VibeCutAgent::userQuestionRaised, this, [this](const QString &q) {
         appendLine(QStringLiteral("VibeCut asks: %1").arg(q), QStringLiteral("#c80"));
     });
+    connect(m_agent, &VibeCutAgent::backgroundProgress, this, [this](const QString &message) {
+        appendLine(QStringLiteral("⏳ %1").arg(message), QStringLiteral("#888"));
+    });
     connect(m_agent, &VibeCutAgent::errorOccurred, this, [this](const QString &e) {
         appendLine(QStringLiteral("⚠ %1").arg(e), QStringLiteral("#c33"));
         m_streamStarted = false;
@@ -264,6 +267,12 @@ QString VibeCutDock::describeTool(const QString &name, const QString &argsJson) 
     }
     if (name == QLatin1String("ask_user")) {
         return QString(); // the actual question is shown via userQuestionRaised
+    }
+    if (name == QLatin1String("speech_status")) {
+        return i18n("Checking speech-to-text status…");
+    }
+    if (name == QLatin1String("speech_setup")) {
+        return i18n("Starting Whisper speech-to-text setup…");
     }
     if (name == QLatin1String("effect_apply")) {
         static const QHash<QString, QString> friendlyNames = {

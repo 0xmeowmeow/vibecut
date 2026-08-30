@@ -31,7 +31,10 @@ const QString kSystemPrompt = QStringLiteral(
     "Use ask_user only when the answer changes which clip or effect to touch. When a tool fails, report "
     "exactly what failed instead of guessing, and never tell the user something worked unless the tool "
     "result confirms it. effect_apply reports already_present and effect_count_on_clip on success — say "
-    "concretely what was added (or that it was already there), not just 'done'. Keep replies short.");
+    "concretely what was added (or that it was already there), not just 'done'. For speech-to-text: call "
+    "speech_status first; if not ready, call speech_setup yourself (it uses Kdenlive's own installer and "
+    "runs in the background — tell the user a one-time confirmation dialog may appear) rather than telling "
+    "the user to open Settings. Keep replies short.");
 
 QByteArray compact(const QJsonObject &obj)
 {
@@ -48,6 +51,7 @@ VibeCutAgent::VibeCutAgent(VibeCutTools *tools, QObject *parent)
 {
     m_apiKey = qEnvironmentVariable("ANTHROPIC_API_KEY").trimmed();
     connect(m_tools, &VibeCutTools::userQuestionRaised, this, &VibeCutAgent::userQuestionRaised);
+    connect(m_tools, &VibeCutTools::backgroundProgress, this, &VibeCutAgent::backgroundProgress);
 }
 
 VibeCutAgent::~VibeCutAgent() = default;

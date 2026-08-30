@@ -56,6 +56,9 @@ Q_SIGNALS:
     void toolFailed(const QString &name, const QString &errorMessage);
     /** The model called ask_user. */
     void userQuestionRaised(const QString &question);
+    /** Progress from a long-running background operation (speech setup,
+     *  model download, ...), independent of any particular agent turn. */
+    void backgroundProgress(const QString &message);
     /** Any hard failure (no key, HTTP error, loop cap, …). */
     void errorOccurred(const QString &message);
 

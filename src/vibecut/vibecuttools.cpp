@@ -8,6 +8,8 @@
 #include "core.h"
 #include "effects/effectstack/model/effectstackmodel.hpp"
 #include "mainwindow.h"
+#include "pythoninterfaces/abstractpythoninterface.h"
+#include "pythoninterfaces/speechtotextwhisper.h"
 #include "timeline2/model/timelinemodel.hpp"
 #include "timeline2/view/timelinecontroller.h"
 #include "timeline2/view/timelinewidget.h"
@@ -108,6 +110,17 @@ QJsonArray VibeCutTools::schemas() const
         {QStringLiteral("required"), QJsonArray{QStringLiteral("question")}},
         {QStringLiteral("additionalProperties"), false}};
 
+    QJsonObject speechSetupSchema{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("properties"),
+         QJsonObject{{QStringLiteral("model"),
+                      QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
+                                  {QStringLiteral("description"),
+                                   QStringLiteral("Whisper model name (e.g. 'turbo', 'tiny', 'base', 'small', 'medium', "
+                                                  "'large-v3'). Defaults to 'turbo', Kdenlive's own recommended "
+                                                  "default (~1.4GB, good accuracy/speed balance).")}}}}},
+        {QStringLiteral("additionalProperties"), false}};
+
     return QJsonArray{
         QJsonObject{{QStringLiteral("name"), QStringLiteral("timeline_list_clips")},
                     {QStringLiteral("description"),
@@ -130,6 +143,21 @@ QJsonArray VibeCutTools::schemas() const
                      QStringLiteral("Ask the user a clarifying question when an answer would change which clip or "
                                     "effect to act on. The user's reply arrives as their next message.")},
                     {QStringLiteral("input_schema"), askUserSchema}},
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("speech_status")},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Report whether Whisper speech-to-text is installed and ready, which models are "
+                                    "installed, and whether a setup is currently in progress. Call this before "
+                                    "generating subtitles, and to check on a setup you previously started.")},
+                    {QStringLiteral("input_schema"), noArgs}},
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("speech_setup")},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Install Whisper speech-to-text using Kdenlive's own built-in Python/pip "
+                                    "installer and download a model, in the background. Returns immediately once "
+                                    "started; progress and completion show up in the panel on their own, and "
+                                    "speech_status confirms when it's done. Kdenlive's installer shows one native "
+                                    "confirmation dialog the first time (downloading model data requires network + "
+                                    "disk) — tell the user to expect and accept it.")},
+                    {QStringLiteral("input_schema"), speechSetupSchema}},
     };
 }
 
@@ -146,6 +174,12 @@ QJsonObject VibeCutTools::invoke(const QString &name, const QJsonObject &input)
     }
     if (name == QLatin1String("ask_user")) {
         return toolAskUser(input);
+    }
+    if (name == QLatin1String("speech_status")) {
+        return toolSpeechStatus();
+    }
+    if (name == QLatin1String("speech_setup")) {
+        return toolSpeechSetup(input);
     }
     return err(QStringLiteral("Unknown tool: %1").arg(name));
 }
@@ -255,4 +289,89 @@ QJsonObject VibeCutTools::toolAskUser(const QJsonObject &input)
     Q_EMIT userQuestionRaised(question);
     return QJsonObject{{QStringLiteral("ok"), true},
                        {QStringLiteral("note"), QStringLiteral("Question shown to the user; await their next message.")}};
+}
+
+SpeechToTextWhisper *VibeCutTools::whisperEngine()
+{
+    if (m_whisper) {
+        return m_whisper;
+    }
+    m_whisper = new SpeechToTextWhisper(this);
+    connect(m_whisper, &AbstractPythonInterface::dependenciesAvailable, this, [this]() {
+        if (!m_pendingModel.isEmpty()) {
+            continueSpeechSetup(m_pendingModel);
+        }
+    });
+    connect(m_whisper, &AbstractPythonInterface::dependenciesMissing, this, [this](const QStringList &messages) {
+        Q_EMIT backgroundProgress(QStringLiteral("Whisper setup incomplete: %1").arg(messages.join(QStringLiteral("; "))));
+        m_pendingModel.clear();
+    });
+    connect(m_whisper, &AbstractPythonInterface::setupError, this, [this](const QString &message) {
+        Q_EMIT backgroundProgress(QStringLiteral("Whisper setup error: %1").arg(message));
+        m_pendingModel.clear();
+    });
+    connect(m_whisper, &AbstractPythonInterface::installFeedback, this,
+            [this](const QString &message) { Q_EMIT backgroundProgress(message); });
+    connect(m_whisper, &AbstractPythonInterface::concurrentScriptFinished, this, [this](const QString &script, const QStringList &args) {
+        Q_UNUSED(script)
+        if (args.contains(QStringLiteral("task=download"))) {
+            Q_EMIT backgroundProgress(QStringLiteral("Model download finished. Call speech_status to confirm it installed correctly."));
+            m_pendingModel.clear();
+        }
+    });
+    return m_whisper;
+}
+
+void VibeCutTools::continueSpeechSetup(const QString &model)
+{
+    Q_EMIT backgroundProgress(QStringLiteral("Whisper is ready — downloading model '%1' now…").arg(model));
+    whisperEngine()->runConcurrentScript(QStringLiteral("whisper/whisperquery.py"),
+                                         {QStringLiteral("task=download"), QStringLiteral("model=%1").arg(model)}, true);
+}
+
+QJsonObject VibeCutTools::toolSpeechStatus()
+{
+    SpeechToTextWhisper *w = whisperEngine();
+    QJsonArray models;
+    for (const QString &m : w->getInstalledModels()) {
+        models.append(m);
+    }
+    return QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("engine"), QStringLiteral("whisper")},
+        {QStringLiteral("dependencies_installed"), w->status() == AbstractPythonInterface::Installed},
+        {QStringLiteral("models_installed"), models},
+        {QStringLiteral("setup_in_progress"), !m_pendingModel.isEmpty() || w->installInProcess()},
+    };
+}
+
+QJsonObject VibeCutTools::toolSpeechSetup(const QJsonObject &input)
+{
+    SpeechToTextWhisper *w = whisperEngine();
+    const QString model = input.value(QStringLiteral("model")).toString(QStringLiteral("turbo"));
+
+    if (w->getInstalledModels().contains(model)) {
+        return QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("already_installed"), true}, {QStringLiteral("model"), model}};
+    }
+    if (!m_pendingModel.isEmpty()) {
+        return QJsonObject{{QStringLiteral("ok"), true},
+                           {QStringLiteral("started"), false},
+                           {QStringLiteral("note"), QStringLiteral("A setup for model '%1' is already in progress.").arg(m_pendingModel)}};
+    }
+
+    m_pendingModel = model;
+    if (w->status() == AbstractPythonInterface::Installed) {
+        continueSpeechSetup(model);
+    } else {
+        Q_EMIT backgroundProgress(QStringLiteral("Setting up Whisper via Kdenlive's own installer — a confirmation "
+                                                  "dialog may appear; please click Continue."));
+        w->installMissingDependencies();
+    }
+    return QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("started"), true},
+        {QStringLiteral("model"), model},
+        {QStringLiteral("note"), QStringLiteral("Installing in the background via Kdenlive's own installer. Progress "
+                                                "appears in this panel on its own; call speech_status later to confirm.")},
+    };
 }
