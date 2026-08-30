@@ -111,7 +111,7 @@ private:
 
     // --- per-exchange state (one user message through to a real reply) ---
     bool m_anyToolCalledThisExchange = false; ///< did any tool_use happen since the user's last message
-    bool m_retriedEmptyTurn = false;          ///< have we already retried once on a truly empty response
+    int m_emptyTurnRetries = 0;               ///< how many truly-empty responses we've retried this exchange
 
-    enum { kMaxToolTurns = 8 };
+    enum { kMaxToolTurns = 8, kMaxEmptyTurnRetries = 2 };
 };

@@ -89,7 +89,7 @@ void VibeCutAgent::sendUserMessage(const QString &text)
                                   {QStringLiteral("content"), text}});
     m_toolTurns = 0;
     m_anyToolCalledThisExchange = false;
-    m_retriedEmptyTurn = false;
+    m_emptyTurnRetries = 0;
     startRequest();
 }
 
@@ -104,7 +104,7 @@ void VibeCutAgent::resetConversation()
     m_messages = QJsonArray();
     m_toolTurns = 0;
     m_anyToolCalledThisExchange = false;
-    m_retriedEmptyTurn = false;
+    m_emptyTurnRetries = 0;
     Q_EMIT statusChanged(QStringLiteral("Ready"));
 }
 
@@ -258,16 +258,18 @@ void VibeCutAgent::finishTurn()
 
     const bool normalStop = m_stopReason == QLatin1String("end_turn") || m_stopReason.isEmpty();
 
-    if (m_blocks.isEmpty() && normalStop && !m_retriedEmptyTurn) {
+    if (m_blocks.isEmpty() && normalStop && m_emptyTurnRetries < kMaxEmptyTurnRetries) {
         // The model produced nothing whatsoever - no text, no tool call - on
         // what otherwise looks like a normal completion. Confirmed live: this
-        // can happen on *any* turn of an exchange, not just the first one
-        // before any tool ran - so retry regardless of tool history, once,
-        // rather than only guarding the opening turn. Don't record an empty
-        // assistant turn (it isn't valid history to replay anyway), and give
-        // it one clean retry before giving up honestly.
-        m_retriedEmptyTurn = true;
-        qWarning().noquote() << QStringLiteral("[VibeCut] empty end_turn with no tool calls this exchange — retrying once (%1)")
+        // can happen more than once in the *same* exchange (a compound
+        // request can hit it after its first tool call, then again after its
+        // second) - retry with a small budget per exchange, not a single
+        // one-shot allowance. Don't record an empty assistant turn (it isn't
+        // valid history to replay anyway).
+        ++m_emptyTurnRetries;
+        qWarning().noquote() << QStringLiteral("[VibeCut] empty end_turn - retrying (%1/%2) (%3)")
+                                     .arg(m_emptyTurnRetries)
+                                     .arg(static_cast<int>(kMaxEmptyTurnRetries))
                                      .arg(historyDiagnostic());
         Q_EMIT statusChanged(QStringLiteral("Retrying (no response)…"));
         startRequest();
