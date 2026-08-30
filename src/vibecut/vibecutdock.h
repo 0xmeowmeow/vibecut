@@ -49,6 +49,10 @@ private:
     void cancelPendingSelection();
     QString describeTool(const QString &name, const QString &argsJson) const;
     QString describeToolResult(const QString &name, const QString &resultJson) const;
+    /** Deterministic offer shown the moment code (not the model) knows
+     *  Whisper needs setup: a clickable "install it now" that bypasses the
+     *  model entirely, plus a settings-dialog escape hatch. */
+    void offerSpeechSetup();
 
     QTextBrowser *m_transcript;
     QLabel *m_status;

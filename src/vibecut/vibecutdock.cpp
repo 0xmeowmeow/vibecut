@@ -135,6 +135,9 @@ VibeCutDock::VibeCutDock(QWidget *parent)
     });
     connect(m_agent, &VibeCutAgent::toolFailed, this, [this](const QString &name, const QString &error) {
         appendLine(i18n("⚠ %1 failed: %2", name, error), QStringLiteral("#c33"));
+        if (error.contains(QStringLiteral("not set up"))) {
+            offerSpeechSetup();
+        }
     });
     connect(m_agent, &VibeCutAgent::toolCompleted, this, [this](const QString &name, const QString &resultJson) {
         // Ground truth for read-only tools, shown regardless of whether the
@@ -142,6 +145,12 @@ VibeCutDock::VibeCutDock(QWidget *parent)
         const QString summary = describeToolResult(name, resultJson);
         if (!summary.isEmpty()) {
             appendLine(summary, QStringLiteral("#888"));
+        }
+        if (name == QLatin1String("speech_status")) {
+            const QJsonObject result = QJsonDocument::fromJson(resultJson.toUtf8()).object();
+            if (result.value(QStringLiteral("ok")).toBool() && !result.value(QStringLiteral("dependencies_installed")).toBool()) {
+                offerSpeechSetup();
+            }
         }
     });
     connect(m_agent, &VibeCutAgent::userQuestionRaised, this, [this](const QString &q) {
@@ -179,10 +188,29 @@ void VibeCutDock::appendWelcome()
 
 void VibeCutDock::onSuggestionClicked(const QUrl &url)
 {
+    const QString id = url.host();
+
+    // These two bypass the model entirely - a deterministic offer the code
+    // itself makes when it knows setup is needed, not something that
+    // depends on the model choosing to act or the user finding a menu.
+    if (id == QLatin1String("speech-install")) {
+        appendLine(i18n("Installing Whisper…"), QStringLiteral("#888"));
+        const QJsonObject result = m_tools->invoke(QStringLiteral("speech_setup"), QJsonObject{});
+        if (!result.value(QStringLiteral("ok")).toBool()) {
+            appendLine(i18n("⚠ %1", result.value(QStringLiteral("error")).toString()), QStringLiteral("#c33"));
+        }
+        return;
+    }
+    if (id == QLatin1String("speech-settings")) {
+        if (pCore && pCore->window()) {
+            pCore->window()->slotShowPreferencePage(Kdenlive::PageSpeech);
+        }
+        return;
+    }
+
     if (m_agent->busy()) {
         return;
     }
-    const QString id = url.host();
     if (id == QLatin1String("denoise")) {
         runNoiseSuggestion();
         return;
@@ -194,6 +222,13 @@ void VibeCutDock::onSuggestionClicked(const QUrl &url)
             return;
         }
     }
+}
+
+void VibeCutDock::offerSpeechSetup()
+{
+    appendLine(i18n("Whisper speech-to-text isn't set up. "
+                     "<a href=\"vibecut://speech-install\">Install it now</a> · "
+                     "<a href=\"vibecut://speech-settings\">Open Speech-to-Text settings</a>"));
 }
 
 void VibeCutDock::submit()
