@@ -196,3 +196,26 @@ JSON. An indeterminate progress bar shows next to the status label
 while a request is in flight. And critically: a turn that ends with no
 assistant text now always leaves a visible "✓ Done." line, so "did it
 run?" always has an answer on screen.
+
+## 2026-08-30 — the panel could not have told you either way
+
+Follow-up: still couldn't hear a difference from DeepFilterNet, even
+with the "✓ Done." fix. Traced it to a real bug, not a listening
+problem — `effect_apply` called `TimelineController::addEffectToClip()`,
+which returns `void`, and then unconditionally returned `{"ok": true}`.
+The tool had no way to know whether Kdenlive actually accepted the
+effect; it just assumed. "✓ Done." was therefore possibly true, possibly
+not — no way to tell from the code as it stood.
+
+Fixed by going one layer lower: `TimelineModel::addClipEffect()` returns
+the clip ids it actually touched, and `EffectStackModel::hasFilter()`
+confirms the effect is really on the stack afterward. `effect_apply` now
+only reports success once both check out, includes whether the effect
+was already present (skips duplicate-adding), and a
+`VibeCutAgent::toolFailed` signal surfaces a failure the instant it
+happens rather than risking it get lost in an empty final reply.
+
+Next: rerun against the cafe interview with this fix in and actually
+confirm, via the Effect/Composition Stack panel, that the effect is
+present — that's the ground truth no chat transcript claim can
+substitute for.
