@@ -14,16 +14,41 @@
 
 #include <KLocalizedString>
 
+#include <QHash>
 #include <QHBoxLayout>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QTextCursor>
-#include <QTextEdit>
+#include <QTextBrowser>
+#include <QUrl>
 #include <QVBoxLayout>
+#include <QVector>
 
 namespace {
 const QString kNoisePrompt = QStringLiteral("Remove background noise from the selected clip.");
+
+struct Suggestion
+{
+    QString id;
+    QString label;
+    QString prompt;
+};
+
+const QVector<Suggestion> &suggestions()
+{
+    static const QVector<Suggestion> list = {
+        {QStringLiteral("denoise"), QStringLiteral("Remove background noise from the selected clip"), kNoisePrompt},
+        {QStringLiteral("list-clips"), QStringLiteral("What clips are on my timeline?"),
+         QStringLiteral("List the clips on my timeline.")},
+        {QStringLiteral("help"), QStringLiteral("What can you help me with?"),
+         QStringLiteral("What can you help me with right now?")},
+    };
+    return list;
+}
 
 TimelineController *currentTimelineController()
 {
@@ -37,9 +62,9 @@ TimelineController *currentTimelineController()
 
 VibeCutDock::VibeCutDock(QWidget *parent)
     : QWidget(parent)
-    , m_transcript(new QTextEdit(this))
+    , m_transcript(new QTextBrowser(this))
     , m_status(new QLabel(this))
-    , m_suggestNoise(new QPushButton(i18n("Remove background noise"), this))
+    , m_progress(new QProgressBar(this))
     , m_input(new QLineEdit(this))
     , m_send(new QPushButton(i18n("Send"), this))
     , m_tools(new VibeCutTools(this))
@@ -49,8 +74,18 @@ VibeCutDock::VibeCutDock(QWidget *parent)
 
     m_transcript->setReadOnly(true);
     m_transcript->setAcceptRichText(false);
+    m_transcript->setOpenLinks(false);
+    m_transcript->setTextInteractionFlags(Qt::TextBrowserInteraction);
     m_input->setPlaceholderText(i18n("Ask VibeCut to edit the timeline…"));
-    m_suggestNoise->setToolTip(i18n("Apply AI noise removal (DeepFilterNet) to the selected clip"));
+
+    m_progress->setRange(0, 0); // indeterminate: we don't get token-level progress from the API
+    m_progress->setTextVisible(false);
+    m_progress->setMaximumHeight(4);
+    m_progress->setVisible(false);
+
+    auto *statusRow = new QHBoxLayout;
+    statusRow->addWidget(m_status, 1);
+    statusRow->addWidget(m_progress, 1);
 
     auto *inputRow = new QHBoxLayout;
     inputRow->addWidget(m_input, 1);
@@ -58,13 +93,12 @@ VibeCutDock::VibeCutDock(QWidget *parent)
 
     auto *layout = new QVBoxLayout(this);
     layout->addWidget(m_transcript, 1);
-    layout->addWidget(m_status);
-    layout->addWidget(m_suggestNoise);
+    layout->addLayout(statusRow);
     layout->addLayout(inputRow);
 
     connect(m_send, &QPushButton::clicked, this, &VibeCutDock::submit);
     connect(m_input, &QLineEdit::returnPressed, this, &VibeCutDock::submit);
-    connect(m_suggestNoise, &QPushButton::clicked, this, &VibeCutDock::runNoiseSuggestion);
+    connect(m_transcript, &QTextBrowser::anchorClicked, this, &VibeCutDock::onSuggestionClicked);
 
     connect(m_agent, &VibeCutAgent::statusChanged, this, [this](const QString &s) {
         m_status->setText(s);
@@ -80,13 +114,20 @@ VibeCutDock::VibeCutDock(QWidget *parent)
         m_transcript->moveCursor(QTextCursor::End);
     });
     connect(m_agent, &VibeCutAgent::assistantMessage, this, [this](const QString &t) {
-        if (!m_streamStarted && !t.isEmpty()) {
-            appendLine(QStringLiteral("VibeCut: %1").arg(t));
+        if (!m_streamStarted) {
+            // The system prompt asks for short replies, so a turn that only
+            // calls tools can come back with no closing text at all - always
+            // leave a visible line so it's never ambiguous whether it ran.
+            appendLine(t.isEmpty() ? i18n("✓ Done.") : QStringLiteral("VibeCut: %1").arg(t),
+                       t.isEmpty() ? QStringLiteral("#2a8") : QString());
         }
         m_streamStarted = false;
     });
     connect(m_agent, &VibeCutAgent::toolInvoked, this, [this](const QString &name, const QString &args) {
-        appendLine(QStringLiteral("→ %1 %2").arg(name, args), QStringLiteral("#888"));
+        const QString friendly = describeTool(name, args);
+        if (!friendly.isEmpty()) {
+            appendLine(friendly, QStringLiteral("#888"));
+        }
     });
     connect(m_agent, &VibeCutAgent::userQuestionRaised, this, [this](const QString &q) {
         appendLine(QStringLiteral("VibeCut asks: %1").arg(q), QStringLiteral("#c80"));
@@ -100,10 +141,40 @@ VibeCutDock::VibeCutDock(QWidget *parent)
         appendLine(i18n("Set ANTHROPIC_API_KEY in the environment and restart to use VibeCut."), QStringLiteral("#c33"));
         m_input->setEnabled(false);
         m_send->setEnabled(false);
-        m_suggestNoise->setEnabled(false);
         m_status->setText(QStringLiteral("No API key"));
     } else {
+        appendWelcome();
         m_status->setText(QStringLiteral("Ready"));
+    }
+}
+
+void VibeCutDock::appendWelcome()
+{
+    QString html = QStringLiteral("<b>%1</b><br>%2<br>")
+                       .arg(i18n("Hi, I'm VibeCut."), i18n("I can act on your live timeline. Try one of these, or type your own request below:"));
+    for (const Suggestion &s : suggestions()) {
+        html += QStringLiteral("• <a href=\"vibecut://%1\">%2</a><br>").arg(s.id, s.label.toHtmlEscaped());
+    }
+    m_transcript->append(html);
+    m_transcript->moveCursor(QTextCursor::End);
+}
+
+void VibeCutDock::onSuggestionClicked(const QUrl &url)
+{
+    if (m_agent->busy()) {
+        return;
+    }
+    const QString id = url.host();
+    if (id == QLatin1String("denoise")) {
+        runNoiseSuggestion();
+        return;
+    }
+    for (const Suggestion &s : suggestions()) {
+        if (s.id == id) {
+            cancelPendingSelection();
+            sendPrompt(s.prompt);
+            return;
+        }
     }
 }
 
@@ -120,9 +191,6 @@ void VibeCutDock::submit()
 
 void VibeCutDock::runNoiseSuggestion()
 {
-    if (m_agent->busy()) {
-        return;
-    }
     cancelPendingSelection();
 
     if (m_tools->selectedClipId() != -1) {
@@ -177,10 +245,33 @@ void VibeCutDock::setBusyUi(bool busy)
     const bool hasKey = m_agent->hasApiKey();
     m_input->setEnabled(hasKey && !busy);
     m_send->setEnabled(hasKey && !busy);
-    m_suggestNoise->setEnabled(hasKey && !busy);
+    m_progress->setVisible(busy);
     if (!busy && hasKey) {
         m_input->setFocus();
     }
+}
+
+QString VibeCutDock::describeTool(const QString &name, const QString &argsJson) const
+{
+    if (name == QLatin1String("timeline_list_clips")) {
+        return i18n("Looking at the clips on your timeline…");
+    }
+    if (name == QLatin1String("timeline_get_selection")) {
+        return i18n("Checking what's selected…");
+    }
+    if (name == QLatin1String("ask_user")) {
+        return QString(); // the actual question is shown via userQuestionRaised
+    }
+    if (name == QLatin1String("effect_apply")) {
+        static const QHash<QString, QString> friendlyNames = {
+            {QStringLiteral("denoise"), i18n("AI Noise Removal (DeepFilterNet)")},
+            {QStringLiteral("denoise_light"), i18n("Noise Suppressor (RNNoise)")},
+        };
+        const QJsonObject args = QJsonDocument::fromJson(argsJson.toUtf8()).object();
+        const QString key = args.value(QStringLiteral("effect")).toString();
+        return i18n("Adding \"%1\"…", friendlyNames.value(key, key));
+    }
+    return i18n("Running %1…", name);
 }
 
 void VibeCutDock::appendLine(const QString &text, const QString &cssColor)
