@@ -173,3 +173,26 @@ On a real voice recording it keeps the voice and takes out the room.
 
 Same next step as before, now with a denoiser that will actually show a
 difference: run the whole NL loop live against the cafe interview.
+
+## 2026-08-30 — the panel becomes an actual chat surface
+
+First live-use feedback, two things: a bolted-on "Remove background
+noise" button wasn't the right shape — the expected pattern for this
+kind of tool (Claude Code, Windsurf, "vibe coding" chat panels
+generally) is a welcome message with clickable suggestions *inside* the
+transcript, not separate buttons. And it wasn't clear a request had even
+run — the only feedback for a tool-only turn was a raw
+`→ effect_apply {...}` line, and the system prompt's "keep replies
+short" instruction meant the model could end a turn with no text at all.
+
+Fixed both. `QTextEdit` → `QTextBrowser` for the transcript so
+suggestions render as real clickable links (`anchorClicked`); on load it
+shows a greeting plus three suggestions — remove background noise
+(still selection-gated, same auto-apply-when-you-click-a-clip flow),
+list the timeline's clips, and a generic "what can you help me with".
+Clicking one sends that exact prompt. Tool calls now narrate in plain
+language ("Adding \"AI Noise Removal (DeepFilterNet)\"…") instead of raw
+JSON. An indeterminate progress bar shows next to the status label
+while a request is in flight. And critically: a turn that ends with no
+assistant text now always leaves a visible "✓ Done." line, so "did it
+run?" always has an answer on screen.
