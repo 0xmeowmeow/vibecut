@@ -6,6 +6,7 @@
 #include "vibecutagent.h"
 #include "vibecuttools.h"
 
+#include <QDebug>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -260,7 +261,28 @@ void VibeCutAgent::finishTurn()
             finalText += block.value(QStringLiteral("text")).toString();
         }
     }
-    Q_EMIT assistantMessage(finalText.trimmed());
+    finalText = finalText.trimmed();
+
+    // A turn can stop for a reason other than genuinely finishing (hitting
+    // max_tokens mid-thought, a stop sequence, a paused turn) - those are not
+    // "done", they're a truncation, and silently showing success for one
+    // would repeat the exact bug this code used to have.
+    if (m_stopReason != QLatin1String("end_turn") && !m_stopReason.isEmpty()) {
+        qWarning().noquote() << QStringLiteral("[VibeCut] turn ended with stop_reason=%1 (not end_turn), "
+                                                "text=%2 blocks=%3")
+                                     .arg(m_stopReason, finalText.isEmpty() ? QStringLiteral("<empty>") : finalText,
+                                          QString::fromUtf8(compact(QJsonObject{{QStringLiteral("blocks"), m_blocks}})));
+        fail(QStringLiteral("Turn ended unexpectedly (%1) instead of finishing normally.").arg(m_stopReason));
+        return;
+    }
+    if (finalText.isEmpty()) {
+        // Genuinely no text and no further tool call, on a normal end_turn -
+        // dump what the model actually sent so this is diagnosable from the
+        // terminal instead of guessed at.
+        qWarning().noquote() << QStringLiteral("[VibeCut] turn ended with empty text on end_turn; blocks=%1")
+                                     .arg(QString::fromUtf8(compact(QJsonObject{{QStringLiteral("blocks"), m_blocks}})));
+    }
+    Q_EMIT assistantMessage(finalText);
     Q_EMIT statusChanged(QStringLiteral("Ready"));
 }
 
