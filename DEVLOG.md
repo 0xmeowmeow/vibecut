@@ -237,3 +237,48 @@ The stream handler already reconstructed and replayed thinking blocks
 (with their signature) generically, so nothing else needed to change —
 that generic handling had been written defensively for exactly this
 flip. Rebuilt and installed; next real test is the cafe interview again.
+It worked.
+
+## 2026-08-30 — the Windsurf pivot, and subtitles end to end
+
+Asked for subtitle generation next. Kdenlive already has real Whisper/Vosk
+speech-to-text — this wasn't starting from nothing — but my first plan was
+too timid: point the user at Kdenlive's own Settings dialog to install a
+model first, then wire the chat trigger on top. The user pushed back hard,
+and rightly: *"the chat panel tells the agent what to do, but the whole
+program should be able to be operated through chat... go have a look at how
+windsurf functioned."*
+
+That's a real, standing shift in how the Native-mode tool surface should
+grow — not a narrow allowlist requiring a GUI detour and a new PR for every
+capability, but broad real control, the way Claude Code relates to a
+repository rather than a fixed menu. Concretely: when Kdenlive's own code
+already knows how to install its own dependencies, the agent should drive
+that directly.
+
+Traced the actual (non-dialog) entry points into Kdenlive's Python/pip
+installer: `AbstractPythonInterface::installMissingDependencies()` for the
+venv/pip bootstrap, `SpeechToTextWhisper::runConcurrentScript()` for the
+model download — both genuinely async (`QFuture`-backed), neither pops a
+window, unlike the dialog-wrapped `installNewModel()` the Settings UI uses.
+One native KDE confirmation dialog is unavoidable the first time (Kdenlive's
+own consent gate for an unattended multi-hundred-MB-to-GB download) — kept
+that rather than routing around a deliberate upstream safety check, and
+taught the model to warn the user about it.
+
+Landed as three new tools:
+- `speech_status` — installed/ready state, installed models, in-progress flag.
+- `speech_setup` — drives the real installer + model download, returns
+  immediately, progress arrives in the panel via a new
+  `VibeCutTools::backgroundProgress` signal that isn't tied to any
+  particular chat turn (setup can finish long after the turn that started
+  it ended).
+- `generate_subtitles` — exports the timeline's audio (mirroring
+  `SpeechDialog`'s MLT multitrack render, kept the known "runs synchronously
+  on the calling thread" limitation upstream already has, since it's
+  audio-only and fast relative to the timeline), creates a subtitle track
+  if none exists, runs Whisper as an async `QProcess` (this is the part
+  that's actually slow, and it never blocks the GUI), and imports the
+  resulting SRT via `SubtitleModel::importSubtitle()` on completion.
+
+Next: run it for real on the cafe interview.
