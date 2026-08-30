@@ -282,3 +282,32 @@ Landed as three new tools:
   resulting SRT via `SubtitleModel::importSubtitle()` on completion.
 
 Next: run it for real on the cafe interview.
+
+## 2026-08-30 — auto-target the clip, stop hiding what tools already know
+
+First live compound request ("remove background noise/conversations and
+add subtitles") surfaced two real gaps at once, both diagnosed straight
+from the terminal logs the user pasted:
+
+- Nothing was selected, and the timeline actually has an AV-split pair
+  (Kdenlive's "split audio to a new track" feature: a video-only clip
+  mirrored to an audio-only twin). The model applied the audio denoise
+  effect to *both*. The audio one worked; the video-only one was always
+  going to fail — `hasFilter()` correctly reported it, but nothing had
+  ever taught the tool that a video-only clip can't host an audio
+  effect in the first place. `resolveTargetClip()` now filters
+  candidates by `PlaylistState` before resolving, and falls back to
+  "the one clip on the timeline" instead of demanding a selection when
+  there's no real ambiguity.
+- The panel showed *that* `timeline_get_selection` and `speech_status`
+  ran, never *what they answered*. If the model didn't narrate the
+  result, the user had no way to know whether it hit a dead end. Fixed
+  with a `toolCompleted` signal the dock renders unconditionally for
+  read-only tools — ground truth the code already has, not something
+  left to the model's discretion to mention.
+
+Also traced a "why did it try to download again?" question to an actual
+filesystem check (`~/.var/app/org.kde.kdenlive` has no venv, no whisper
+cache) rather than guessing: nothing had ever actually installed before
+— every earlier "checking setup" was a status check that correctly came
+back negative, not a wasted repeat.
