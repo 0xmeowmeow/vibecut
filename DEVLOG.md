@@ -135,3 +135,41 @@ multi-line `data:`) are verified.
 Not yet done: driving the whole loop against the live API with a real
 key and a real project — "remove background noise from the selected
 clip" landing the RNNoise effect on the clip's stack.
+
+## 2026-08-30 — DeepFilterNet, because RNNoise wasn't enough
+
+First live run worked — the tool loop fired and dropped the effect on the
+clip — but on a real interview recorded in a busy cafe you couldn't hear a
+difference. That's RNNoise doing what RNNoise does: it's trained on
+*stationary* noise (hiss, hum, HVAC), and cafe babble — other people
+talking, cutlery, music — is the exact case it can't touch, because it
+can't tell the target voice from background voices.
+
+So bundled **DeepFilterNet** (DFN3, `Rikorose/DeepFilterNet` v0.5.6) — a
+deep-learning speech denoiser that handles non-stationary noise. It ships
+a **LADSPA plugin**, which means it drops straight into the same slot
+Kdenlive already uses for the RNNoise effect — no subprocess, no file
+juggling, non-destructive, real-time preview:
+
+- `packaging/flatpak/org.kde.kdenlive-dependencies.json` — new
+  `deepfilternet-ladspa` module fetches the prebuilt
+  `libdeep_filter_ladspa.so` (glibc build, standard deps only) into
+  `/app/lib/ladspa`. Placed last in the dep list so it doesn't invalidate
+  the cache of anything else.
+- `data/effects/ladspa/ladspa_deepfilternet.xml` — Kdenlive effect
+  wrapper, "AI Noise Removal (DeepFilterNet)", LADSPA id `ladspa.7843795`
+  (mono), exposing Attenuation Limit + the processing thresholds.
+- `vibecuttools.cpp` — `denoise` in the allowlist now maps to DFN;
+  the old RNNoise filter stays as `denoise_light`. The `effect_apply`
+  tool description tells the model to reach for `denoise` on real-world
+  location noise.
+
+Verified end to end with `melt` inside the Flatpak: `analyseplugin` sees
+the plugin (id, ports, defaults all as encoded in the XML), and running
+`-filter ladspa.7843795` over a test signal processes the audio — on a
+non-speech tone+noise mix at max attenuation it drops the output ~70 dB,
+i.e. it's aggressively removing everything it doesn't classify as voice.
+On a real voice recording it keeps the voice and takes out the room.
+
+Same next step as before, now with a denoiser that will actually show a
+difference: run the whole NL loop live against the cafe interview.

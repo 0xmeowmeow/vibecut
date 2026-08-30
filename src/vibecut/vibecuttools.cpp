@@ -14,12 +14,15 @@
 #include <KLocalizedString>
 
 namespace {
-// The one effect the first proof of concept needs: RNNoise background-noise
-// removal, already shipped by Kdenlive as data/effects/ladspa/ladspa_librnnoise.xml.
+// Allowlisted audio-cleanup effects. "denoise" is DeepFilterNet, a
+// deep-learning speech denoiser bundled via the Flatpak manifest
+// (deepfilternet-ladspa) — it handles non-stationary noise like a busy cafe,
+// which the RNNoise-based "denoise_light" cannot.
 QJsonObject effectAllowlist()
 {
     return QJsonObject{
-        {QStringLiteral("denoise"), QStringLiteral("ladspa.9354877")},
+        {QStringLiteral("denoise"), QStringLiteral("ladspa.7843795")},
+        {QStringLiteral("denoise_light"), QStringLiteral("ladspa.9354877")},
     };
 }
 
@@ -105,8 +108,10 @@ QJsonArray VibeCutTools::schemas() const
                     {QStringLiteral("input_schema"), noArgs}},
         QJsonObject{{QStringLiteral("name"), QStringLiteral("effect_apply")},
                     {QStringLiteral("description"),
-                     QStringLiteral("Add an allowlisted effect to a timeline clip. Use this for requests like removing "
-                                    "background noise from a clip.")},
+                     QStringLiteral("Add an allowlisted effect to a timeline clip. For background-noise removal use "
+                                    "'denoise' (DeepFilterNet, a deep-learning denoiser that handles real-world noise "
+                                    "like a cafe, street or crowd); use 'denoise_light' only if the user asks for the "
+                                    "lighter RNNoise filter or wants to preserve more room ambience.")},
                     {QStringLiteral("input_schema"), applyEffectSchema}},
         QJsonObject{{QStringLiteral("name"), QStringLiteral("ask_user")},
                     {QStringLiteral("description"),

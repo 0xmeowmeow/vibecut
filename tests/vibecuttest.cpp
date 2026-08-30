@@ -74,7 +74,8 @@ TEST_CASE("SSE parser assembles events across arbitrary chunk boundaries", "[vib
 
 TEST_CASE("effect allowlist is the guard rail", "[vibecut]")
 {
-    CHECK(VibeCutTools::resolveEffectId(QStringLiteral("denoise")) == QStringLiteral("ladspa.9354877"));
+    CHECK(VibeCutTools::resolveEffectId(QStringLiteral("denoise")) == QStringLiteral("ladspa.7843795"));
+    CHECK(VibeCutTools::resolveEffectId(QStringLiteral("denoise_light")) == QStringLiteral("ladspa.9354877"));
     CHECK(VibeCutTools::resolveEffectId(QStringLiteral("system.exec")).isEmpty());
     CHECK(VibeCutTools::resolveEffectId(QString()).isEmpty());
 }

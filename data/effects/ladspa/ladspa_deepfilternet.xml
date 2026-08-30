@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<!DOCTYPE kpartgui>
+<effect xmlns="https://www.kdenlive.org" tag="ladspa.7843795" id="ladspa.7843795" type="audio">
+    <name>AI Noise Removal (DeepFilterNet)</name>
+    <description>Deep-learning speech denoiser. Removes non-stationary background noise (cafe, street, crowd, keyboard, wind) while preserving the voice. Heavier than the RNNoise-based Noise Suppressor but much stronger on real-world location audio.</description>
+    <author>Hendrik Schröter</author>
+    <parameter type="constant" name="2" default="100" min="0" max="100" suffix="dB">
+        <name>Attenuation Limit (dB)</name>
+        <comment>How far detected noise is turned down. 100 = maximum removal; lower values leave more of the room tone in.</comment>
+    </parameter>
+    <parameter type="constant" name="3" default="-15" min="-15" max="35" suffix="dB">
+        <name>Min Processing Threshold (dB)</name>
+    </parameter>
+    <parameter type="constant" name="4" default="35" min="-15" max="35" suffix="dB">
+        <name>Max ERB Processing Threshold (dB)</name>
+    </parameter>
+    <parameter type="constant" name="5" default="35" min="-15" max="35" suffix="dB">
+        <name>Max DF Processing Threshold (dB)</name>
+    </parameter>
+    <parameter type="constant" name="6" default="0" min="0" max="10">
+        <name>Min Processing Buffer (frames)</name>
+    </parameter>
+    <parameter type="constant" name="7" default="0" min="0" max="0.05" factor="1" decimals="3">
+        <name>Post Filter Beta</name>
+    </parameter>
+</effect>
