@@ -128,6 +128,16 @@ block the GUI thread synchronously for one of these. (`speech_setup` and
 - A closing "done" marker is only ever shown when there's real evidence
   something happened (a tool ran and its result was narrated above it);
   otherwise show a real error, not a green checkmark.
+- Read-only tool results (a selection, a status check, a clip list) show
+  a plain "→ ..." summary line unconditionally, the moment the code
+  knows the answer — never dependent on the model choosing to narrate
+  it. Same principle, one level further: when the code discovers a
+  routine, fixable blocker (a missing dependency, nothing selected),
+  it should proactively offer the fix as a clickable one-click action
+  in the transcript that runs by calling the tool layer directly — not
+  wait for the model to decide to mention it, and never require a trip
+  to a Settings dialog to do something routine. A settings-dialog link
+  can exist as a secondary option; it must never be the only path.
 
 ## 6. Build/ops rules
 
