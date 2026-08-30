@@ -68,7 +68,7 @@ further that we don't have yet, worth building toward:
 What stays out of scope for Native mode regardless: a raw "run any shell
 command" bridge. That escape hatch belongs to VibeScript, not here.
 
-## 3. Verification discipline — this is the one that bit us twice
+## 3. Verification discipline — this is the one that bit us three times
 
 **A tool must never report `ok:true` without confirming the underlying
 Kdenlive state actually changed.** Not "the function was called" —
@@ -76,7 +76,17 @@ Kdenlive state actually changed.** Not "the function was called" —
 called `TimelineController::addEffectToClip()` (returns `void`) and
 unconditionally reported success; the fix calls the model method that
 reports which clips it actually touched and cross-checks
-`EffectStackModel::hasFilter()` afterward.
+`EffectStackModel::hasFilter()` afterward. `speech_setup` had the same
+disease at a larger scale: it called `installMissingDependencies()` and
+reported `{"started": true}` unconditionally, but that call cannot
+create a venv from scratch (a private helper's default parameter made it
+a silent no-op on a fresh system) — the tool lied about starting an
+install for several sessions before anyone checked the filesystem.
+**When wrapping an existing subsystem's API, trace the exact call path
+its own working UI uses for the same action — don't call the
+plausibly-named method and assume it does the whole job.** Kdenlive's
+own "Install" button branches on `status()` first; copy that branch, not
+just the one call that looked right.
 
 **An agent turn must never be presented as "done" just because it
 produced no error.** Two distinct failure shapes were found live, not
