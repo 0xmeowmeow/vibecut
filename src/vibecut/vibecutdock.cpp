@@ -42,6 +42,8 @@ const QVector<Suggestion> &suggestions()
 {
     static const QVector<Suggestion> list = {
         {QStringLiteral("denoise"), QStringLiteral("Remove background noise from the selected clip"), kNoisePrompt},
+        {QStringLiteral("subtitles"), QStringLiteral("Generate subtitles"),
+         QStringLiteral("Generate subtitles for this project. Set up Whisper first if it isn't ready yet.")},
         {QStringLiteral("list-clips"), QStringLiteral("What clips are on my timeline?"),
          QStringLiteral("List the clips on my timeline.")},
         {QStringLiteral("help"), QStringLiteral("What can you help me with?"),
@@ -273,6 +275,9 @@ QString VibeCutDock::describeTool(const QString &name, const QString &argsJson) 
     }
     if (name == QLatin1String("speech_setup")) {
         return i18n("Starting Whisper speech-to-text setup…");
+    }
+    if (name == QLatin1String("generate_subtitles")) {
+        return i18n("Exporting audio and starting Whisper transcription…");
     }
     if (name == QLatin1String("effect_apply")) {
         static const QHash<QString, QString> friendlyNames = {

@@ -5,16 +5,31 @@
 
 #include "vibecuttools.h"
 
+#include "bin/model/subtitlemodel.hpp"
 #include "core.h"
+#include "dialogs/subtitleedit.h"
 #include "effects/effectstack/model/effectstackmodel.hpp"
+#include "kdenlivesettings.h"
 #include "mainwindow.h"
 #include "pythoninterfaces/abstractpythoninterface.h"
 #include "pythoninterfaces/speechtotextwhisper.h"
+#include "timeline2/model/timelineitemmodel.hpp"
 #include "timeline2/model/timelinemodel.hpp"
 #include "timeline2/view/timelinecontroller.h"
 #include "timeline2/view/timelinewidget.h"
 
+#include "mlt++/MltConsumer.h"
+#include "mlt++/MltProfile.h"
+#include "mlt++/MltTractor.h"
+
 #include <KLocalizedString>
+
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QProcess>
+#include <QReadLocker>
+#include <QTemporaryFile>
 
 namespace {
 // Allowlisted audio-cleanup effects. "denoise" is DeepFilterNet, a
@@ -50,6 +65,14 @@ std::shared_ptr<TimelineItemModel> currentModel()
     }
     TimelineWidget *tl = pCore->window()->getCurrentTimeline();
     return tl ? tl->model() : nullptr;
+}
+
+TimelineWidget *currentTimelineWidget()
+{
+    if (!pCore || !pCore->window()) {
+        return nullptr;
+    }
+    return pCore->window()->getCurrentTimeline();
 }
 } // namespace
 
@@ -121,6 +144,23 @@ QJsonArray VibeCutTools::schemas() const
                                                   "default (~1.4GB, good accuracy/speed balance).")}}}}},
         {QStringLiteral("additionalProperties"), false}};
 
+    QJsonObject generateSubtitlesSchema{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("properties"),
+         QJsonObject{
+             {QStringLiteral("clip_id"),
+              QJsonObject{{QStringLiteral("type"), QStringLiteral("integer")},
+                          {QStringLiteral("description"),
+                           QStringLiteral("Scope transcription to this clip's span on the timeline. Omit to "
+                                          "transcribe the whole project.")}}},
+             {QStringLiteral("model"),
+              QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
+                          {QStringLiteral("description"),
+                           QStringLiteral("Which installed Whisper model to use. Omit to use whatever speech_status "
+                                          "reports as installed.")}}},
+         }},
+        {QStringLiteral("additionalProperties"), false}};
+
     return QJsonArray{
         QJsonObject{{QStringLiteral("name"), QStringLiteral("timeline_list_clips")},
                     {QStringLiteral("description"),
@@ -158,6 +198,13 @@ QJsonArray VibeCutTools::schemas() const
                                     "confirmation dialog the first time (downloading model data requires network + "
                                     "disk) — tell the user to expect and accept it.")},
                     {QStringLiteral("input_schema"), speechSetupSchema}},
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("generate_subtitles")},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Transcribe audio with Whisper and add the result as a subtitle track. Requires "
+                                    "speech_status to report a model installed first - call speech_setup otherwise. "
+                                    "Runs in the background and can take a while for long clips; returns immediately "
+                                    "once started, progress and the final result appear in the panel on their own.")},
+                    {QStringLiteral("input_schema"), generateSubtitlesSchema}},
     };
 }
 
@@ -180,6 +227,9 @@ QJsonObject VibeCutTools::invoke(const QString &name, const QJsonObject &input)
     }
     if (name == QLatin1String("speech_setup")) {
         return toolSpeechSetup(input);
+    }
+    if (name == QLatin1String("generate_subtitles")) {
+        return toolGenerateSubtitles(input);
     }
     return err(QStringLiteral("Unknown tool: %1").arg(name));
 }
@@ -373,5 +423,213 @@ QJsonObject VibeCutTools::toolSpeechSetup(const QJsonObject &input)
         {QStringLiteral("model"), model},
         {QStringLiteral("note"), QStringLiteral("Installing in the background via Kdenlive's own installer. Progress "
                                                 "appears in this panel on its own; call speech_status later to confirm.")},
+    };
+}
+
+bool VibeCutTools::ensureSubtitleTrack(const std::shared_ptr<TimelineItemModel> &model)
+{
+    if (model->hasSubtitleModel()) {
+        return true;
+    }
+    std::shared_ptr<SubtitleModel> subtitleModel = model->createSubtitleModel();
+    if (!subtitleModel) {
+        return false;
+    }
+    if (pCore->subtitleWidget()) {
+        pCore->subtitleWidget()->setModel(subtitleModel);
+    }
+    KdenliveSettings::setShowSubtitles(true);
+    if (TimelineWidget *tw = currentTimelineWidget()) {
+        tw->connectSubtitleModel(true);
+    }
+    return true;
+}
+
+// Mirrors SpeechDialog::slotProcessSpeech()'s audio-export step (same known
+// limitation noted there: this renders synchronously on the calling thread.
+// It's audio-only so it's fast relative to the timeline's length, not a
+// full re-encode - but a genuinely non-blocking render is future work).
+QString VibeCutTools::exportZoneAudio(const std::shared_ptr<TimelineItemModel> &model, int zoneIn, int zoneOut, QString &error)
+{
+    QTemporaryFile tmpPlaylist(QDir::temp().absoluteFilePath(QStringLiteral("XXXXXX.mlt")));
+    QTemporaryFile tmpAudio(QDir::temp().absoluteFilePath(QStringLiteral("XXXXXX.wav")));
+    tmpPlaylist.setAutoRemove(false);
+    tmpAudio.setAutoRemove(false);
+    QString sceneList;
+    QString audio;
+    if (tmpPlaylist.open()) {
+        sceneList = tmpPlaylist.fileName();
+    }
+    tmpPlaylist.close();
+    if (tmpAudio.open()) {
+        audio = tmpAudio.fileName();
+    }
+    tmpAudio.close();
+    if (sceneList.isEmpty() || audio.isEmpty()) {
+        error = QStringLiteral("Could not create temporary files for audio export.");
+        return QString();
+    }
+
+    model->sceneList(QDir::temp().absolutePath(), sceneList);
+
+    QReadLocker lock(&pCore->xmlMutex);
+    Mlt::Producer producer(model->tractor()->get_profile(), "xml", sceneList.toUtf8().constData());
+    if (!producer.is_valid()) {
+        QFile::remove(sceneList);
+        error = QStringLiteral("Could not build a render producer from the timeline.");
+        return QString();
+    }
+    int tracksCount = model->tractor()->count();
+    std::shared_ptr<Mlt::Service> s(new Mlt::Service(producer));
+    std::shared_ptr<Mlt::Multitrack> multi = nullptr;
+    bool multitrackFound = false;
+    for (int i = 0; i < 10; i++) {
+        s.reset(s->producer());
+        if (s == nullptr || !s->is_valid()) {
+            break;
+        }
+        if (s->type() == mlt_service_multitrack_type) {
+            multi.reset(new Mlt::Multitrack(*s.get()));
+            if (multi->count() == tracksCount) {
+                multitrackFound = true;
+                break;
+            }
+        }
+    }
+    if (multitrackFound) {
+        // Mute video tracks only; keep every audio track for a full mixdown
+        // (unlike SpeechDialog, which can target one specific track, this
+        // tool transcribes "everything audible" by default).
+        for (int i = 0; i < multi->count(); i++) {
+            std::shared_ptr<Mlt::Producer> tk(multi->track(i));
+            if (tk->get_int("hide") == 1) {
+                tk->set("hide", 3);
+            }
+        }
+    }
+
+    Mlt::Consumer xmlConsumer(model->tractor()->get_profile(), "avformat", audio.toUtf8().constData());
+    if (!xmlConsumer.is_valid()) {
+        QFile::remove(sceneList);
+        error = QStringLiteral("Could not create an audio export consumer.");
+        return QString();
+    }
+    xmlConsumer.set("terminate_on_pause", 1);
+    xmlConsumer.set("properties", "WAV");
+    producer.set_in_and_out(zoneIn, zoneOut);
+    xmlConsumer.connect(producer);
+    xmlConsumer.run();
+
+    QFile::remove(sceneList);
+
+    if (!QFile::exists(audio) || QFileInfo(audio).size() == 0) {
+        QFile::remove(audio);
+        error = QStringLiteral("Audio export produced no output.");
+        return QString();
+    }
+    return audio;
+}
+
+QJsonObject VibeCutTools::toolGenerateSubtitles(const QJsonObject &input)
+{
+    std::shared_ptr<TimelineItemModel> model = currentModel();
+    if (!model) {
+        return err(QStringLiteral("No timeline is open."));
+    }
+    if (m_subtitleJobRunning) {
+        return QJsonObject{{QStringLiteral("ok"), true},
+                           {QStringLiteral("started"), false},
+                           {QStringLiteral("note"), QStringLiteral("A subtitle generation job is already running.")}};
+    }
+
+    SpeechToTextWhisper *w = whisperEngine();
+    if (w->status() != AbstractPythonInterface::Installed) {
+        return err(QStringLiteral("Whisper is not set up yet. Call speech_setup first."));
+    }
+    const QStringList installed = w->getInstalledModels();
+    if (installed.isEmpty()) {
+        return err(QStringLiteral("No Whisper model is installed yet. Call speech_setup first."));
+    }
+    QString useModel = input.value(QStringLiteral("model")).toString();
+    if (useModel.isEmpty() || !installed.contains(useModel)) {
+        useModel = installed.contains(QStringLiteral("turbo")) ? QStringLiteral("turbo") : installed.first();
+    }
+
+    int zoneIn = 0;
+    int zoneOut = model->duration();
+    if (input.contains(QStringLiteral("clip_id"))) {
+        const int clipId = input.value(QStringLiteral("clip_id")).toInt(-1);
+        if (!model->isClip(clipId)) {
+            return err(QStringLiteral("Clip id %1 does not exist on the timeline.").arg(clipId));
+        }
+        zoneIn = model->getClipPosition(clipId);
+        zoneOut = zoneIn + model->getClipPlaytime(clipId);
+    }
+    if (zoneOut <= zoneIn) {
+        return err(QStringLiteral("Nothing to transcribe (empty zone)."));
+    }
+
+    if (!ensureSubtitleTrack(model)) {
+        return err(QStringLiteral("Could not create a subtitle track."));
+    }
+
+    QString exportError;
+    const QString audioPath = exportZoneAudio(model, zoneIn, zoneOut, exportError);
+    if (audioPath.isEmpty()) {
+        return err(exportError.isEmpty() ? QStringLiteral("Audio export failed.") : exportError);
+    }
+
+    const QString srtPath = QDir::temp().absoluteFilePath(QFileInfo(audioPath).completeBaseName() + QStringLiteral(".srt"));
+    QStringList arguments = {w->subtitleScript(), audioPath, useModel,
+                             QStringLiteral("ffmpeg_path=%1").arg(KdenliveSettings::ffmpegpath())};
+    if (!KdenliveSettings::whisperDevice().isEmpty()) {
+        arguments << QStringLiteral("device=%1").arg(KdenliveSettings::whisperDevice());
+    }
+    if (KdenliveSettings::whisperDisableFP16()) {
+        arguments << QStringLiteral("fp16=False");
+    }
+
+    auto *proc = new QProcess(this);
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    m_subtitleJobRunning = true;
+    Q_EMIT backgroundProgress(QStringLiteral("Transcribing with Whisper (%1)… this can take a while for long audio.").arg(useModel));
+
+    connect(proc, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this,
+            [this, proc, srtPath, audioPath, zoneIn](int exitCode, QProcess::ExitStatus status) {
+                m_subtitleJobRunning = false;
+                QFile::remove(audioPath);
+                if (status == QProcess::CrashExit) {
+                    Q_EMIT backgroundProgress(QStringLiteral("Subtitle generation crashed."));
+                    proc->deleteLater();
+                    return;
+                }
+                if (exitCode != 0 || !QFile::exists(srtPath)) {
+                    const QString errOut = QString::fromUtf8(proc->readAllStandardError());
+                    Q_EMIT backgroundProgress(QStringLiteral("Subtitle generation failed: %1")
+                                                  .arg(errOut.isEmpty() ? QStringLiteral("no output produced") : errOut));
+                    proc->deleteLater();
+                    return;
+                }
+                std::shared_ptr<TimelineItemModel> liveModel = currentModel();
+                std::shared_ptr<SubtitleModel> subModel = liveModel ? liveModel->getSubtitleModel() : nullptr;
+                if (subModel) {
+                    subModel->importSubtitle(srtPath, zoneIn, true);
+                    Q_EMIT backgroundProgress(QStringLiteral("✓ Subtitles imported from the Whisper transcription."));
+                } else {
+                    Q_EMIT backgroundProgress(
+                        QStringLiteral("Transcription finished, but no subtitle track was found to import into."));
+                }
+                QFile::remove(srtPath);
+                proc->deleteLater();
+            });
+
+    proc->start(w->venvPythonExecs().python, arguments);
+
+    return QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("started"), true},
+        {QStringLiteral("model"), useModel},
+        {QStringLiteral("note"), QStringLiteral("Transcribing in the background. Progress and the final result will "
+                                                "appear in this panel on their own.")},
     };
 }

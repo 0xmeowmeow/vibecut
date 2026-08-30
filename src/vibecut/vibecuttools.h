@@ -10,7 +10,10 @@
 #include <QObject>
 #include <QString>
 
+#include <memory>
+
 class SpeechToTextWhisper;
+class TimelineItemModel;
 
 /** @brief Native-mode tool surface exposed to the assistant.
  *
@@ -67,10 +70,14 @@ private:
     QJsonObject toolAskUser(const QJsonObject &input);
     QJsonObject toolSpeechStatus();
     QJsonObject toolSpeechSetup(const QJsonObject &input);
+    QJsonObject toolGenerateSubtitles(const QJsonObject &input);
 
     SpeechToTextWhisper *whisperEngine();
     void continueSpeechSetup(const QString &model);
+    bool ensureSubtitleTrack(const std::shared_ptr<TimelineItemModel> &model);
+    QString exportZoneAudio(const std::shared_ptr<TimelineItemModel> &model, int zoneIn, int zoneOut, QString &error);
 
     SpeechToTextWhisper *m_whisper = nullptr;
-    QString m_pendingModel; // non-empty while waiting for deps before downloading a model
+    QString m_pendingModel;      // non-empty while waiting for deps before downloading a model
+    bool m_subtitleJobRunning = false;
 };
