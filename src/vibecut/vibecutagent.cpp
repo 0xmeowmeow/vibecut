@@ -232,12 +232,14 @@ void VibeCutAgent::finishTurn()
 
     const bool normalStop = m_stopReason == QLatin1String("end_turn") || m_stopReason.isEmpty();
 
-    if (m_blocks.isEmpty() && normalStop && !m_anyToolCalledThisExchange && !m_retriedEmptyTurn) {
+    if (m_blocks.isEmpty() && normalStop && !m_retriedEmptyTurn) {
         // The model produced nothing whatsoever - no text, no tool call - on
-        // what otherwise looks like a normal completion. This is exactly the
-        // failure mode that used to show a false "Done.": don't record an
-        // empty assistant turn (it isn't valid history to replay anyway),
-        // and give it one clean retry before giving up honestly.
+        // what otherwise looks like a normal completion. Confirmed live: this
+        // can happen on *any* turn of an exchange, not just the first one
+        // before any tool ran - so retry regardless of tool history, once,
+        // rather than only guarding the opening turn. Don't record an empty
+        // assistant turn (it isn't valid history to replay anyway), and give
+        // it one clean retry before giving up honestly.
         m_retriedEmptyTurn = true;
         qWarning().noquote() << QStringLiteral("[VibeCut] empty end_turn with no tool calls this exchange — retrying once");
         Q_EMIT statusChanged(QStringLiteral("Retrying (no response)…"));
