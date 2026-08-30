@@ -219,3 +219,21 @@ Next: rerun against the cafe interview with this fix in and actually
 confirm, via the Effect/Composition Stack panel, that the effect is
 present — that's the ground truth no chat transcript claim can
 substitute for.
+
+## 2026-08-30 — found it: disabled thinking was dropping tool calls
+
+The verification fix immediately paid off — instead of an unfalsifiable
+"✓ Done.", the real run showed exactly what happened: `timeline_get_selection`
+ran, then the turn ended with empty text and *no `effect_apply` call at
+all*. Not called-and-failed — never called. Anthropic's own docs flag
+this: with thinking disabled, Claude can end an agentic turn without
+emitting a tool_use block it clearly intended to, no error raised. The
+POC had shipped with thinking off (to keep the first version of the SSE
+stream handler simpler) with a code comment to revisit it "once the loop
+is proven" — it just proved itself unproven.
+
+Flipped `thinking` from `{"type":"disabled"}` to `{"type":"adaptive"}`.
+The stream handler already reconstructed and replayed thinking blocks
+(with their signature) generically, so nothing else needed to change —
+that generic handling had been written defensively for exactly this
+flip. Rebuilt and installed; next real test is the cafe interview again.
