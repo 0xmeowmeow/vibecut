@@ -2,7 +2,9 @@
 
 Read this first. `DEVLOG.md` in this same directory has the fuller
 narrative/build-in-public version of the same history — this file is the
-operational "pick up where we left off" doc.
+operational "pick up where we left off" doc. `DESIGN_SPECS.md` is the
+standing rules doc for the agent/panel itself — read it before adding a
+tool or touching the agent loop.
 
 ## What this project is
 
