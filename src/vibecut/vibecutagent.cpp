@@ -96,10 +96,13 @@ void VibeCutAgent::startRequest()
         {QStringLiteral("model"), m_model},
         {QStringLiteral("max_tokens"), kMaxTokens},
         {QStringLiteral("stream"), true},
-        // Thinking off keeps stream reconstruction simple for the POC (no
-        // thinking blocks to replay with signatures). Revisit with
-        // {"type":"adaptive"} once the loop is proven.
-        {QStringLiteral("thinking"), QJsonObject{{QStringLiteral("type"), QStringLiteral("disabled")}}},
+        // Disabled thinking is known to make Claude occasionally end an
+        // agentic turn without emitting the tool_use block it clearly
+        // intended to (empty final text, no error) - that's what happened
+        // here: get_selection ran, effect_apply never did. Adaptive thinking
+        // fixes it; the stream handler already replays thinking blocks
+        // (with their signature) unchanged, so no other change is needed.
+        {QStringLiteral("thinking"), QJsonObject{{QStringLiteral("type"), QStringLiteral("adaptive")}}},
         {QStringLiteral("system"), QJsonArray{systemBlock}},
         {QStringLiteral("tools"), m_tools->schemas()},
         {QStringLiteral("messages"), m_messages},
