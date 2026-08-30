@@ -311,3 +311,35 @@ filesystem check (`~/.var/app/org.kde.kdenlive` has no venv, no whisper
 cache) rather than guessing: nothing had ever actually installed before
 — every earlier "checking setup" was a status check that correctly came
 back negative, not a wasted repeat.
+
+## 2026-08-31 — the actual root cause: the wrong installer entry point
+
+"Something structural is wrong" was the right call. Repeated live tests
+of Whisper install kept landing on the exact same terminal line:
+`=== CHECKING SETUP...NO!!!` — never a venv, never a whisper cache,
+never a python subprocess, no matter how many times "Install it now"
+was clicked. Traced it precisely through Kdenlive's own source instead
+of guessing further: `installMissingDependencies()` — the call
+`speech_setup` used unconditionally — **cannot create a venv from
+scratch**. It calls a private helper whose `forceInstall` parameter
+defaults to `false`; with no venv present, that silently no-ops with no
+signal and no error. `speech_setup` was reporting `{"started": true}`
+turn after turn while genuinely nothing had ever started.
+
+Kdenlive's own "Install" button doesn't call that method unconditionally
+either — `PythonDependencyMessage` (in `abstractpythoninterface.cpp`)
+switches on `status()`: `NotInstalled`/`Broken`/`Unknown` calls
+`checkVenv(false, true)` (the one call that actually creates the venv,
+then chains into `installMissingDependencies()` itself once it exists);
+`MissingDependencies` calls `installMissingDependencies()` directly,
+which is only correct once a venv already exists. `speech_setup` now
+mirrors that exact switch instead of guessing at a single call, and
+`speech_status` refreshes the cached status before reporting rather than
+trusting a stale `Unknown` default.
+
+This is also, most likely, the real explanation behind the empty-turn
+chase across several prior commits — a tool reporting "started, installing
+in the background" turn after turn with zero real progress ever showing
+up is exactly the kind of state that could produce a model with nothing
+coherent left to say. Not proven, but far more satisfying than the
+hypotheses already ruled out with hard data.
