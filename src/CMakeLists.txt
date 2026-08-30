@@ -64,6 +64,7 @@ add_subdirectory(timeline2)
 add_subdirectory(titler)
 add_subdirectory(transitions)
 add_subdirectory(utils)
+add_subdirectory(vibecut)
 add_subdirectory(widgets)
 add_subdirectory(xml)
 add_subdirectory(layouts)
@@ -288,6 +289,7 @@ target_link_libraries(kdenliveLib PUBLIC
     Qt${QT_MAJOR_VERSION}::Concurrent
     Qt${QT_MAJOR_VERSION}::Multimedia
     Qt${QT_MAJOR_VERSION}::MultimediaWidgets
+    Qt${QT_MAJOR_VERSION}::Network
     Qt${QT_MAJOR_VERSION}::NetworkAuth
     Qt${QT_MAJOR_VERSION}::SvgWidgets
     # Qt${QT_MAJOR_VERSION}::Test

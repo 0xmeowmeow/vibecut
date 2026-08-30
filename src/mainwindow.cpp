@@ -56,6 +56,7 @@ SPDX-License-Identifier: GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL
 #include "monitor/monitormanager.h"
 #include "monitor/scopes/audiographspectrum.h"
 #include "onlineresources/resourcewidget.hpp"
+#include "vibecut/vibecutdock.h"
 #include "profiles/profilemodel.hpp"
 #include "profiles/profilerepository.hpp"
 #include "project/cliptranscode.h"
@@ -282,6 +283,9 @@ void MainWindow::init()
 
     auto dockGuides = addDock(i18n("Markers"), QStringLiteral("markers"), pCore->guidesList(), KDDockWidgets::Location_OnRight);
     dockGuides->close();
+
+    auto dockVibeCut = addDock(i18n("VibeCut"), QStringLiteral("vibecut"), new VibeCutDock(this), KDDockWidgets::Location_OnRight);
+    dockVibeCut->close();
 
     // Screen grab widget
     QWidget *grabWidget = new QWidget(this);

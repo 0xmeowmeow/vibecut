@@ -83,3 +83,55 @@ a working build of our own fork to actually develop against.
 Next: the noise-removal proof of concept (chat dock panel + smallest
 possible Native-mode command surface calling the existing RNNoise
 effect).
+
+## 2026-08-30 — the assistant panel, wired end to end
+
+Read through vibecad's actual AI subsystem (`src/Mod/VibeCAD/`, ~776k
+lines) to copy its decisions rather than reinvent them. What carried
+over directly: the tiny byte-capped system prompt sent as a cached
+system block; the per-tool JSON-Schema spec + `{"ok": bool, ...}` result
+contract (their `tool_impl/service/*` modules); an **allowlist** as the
+guard rail for what the model can actually touch (their
+`NativeActionManifest`); provider work kept off the UI thread with tool
+execution marshalled back to it; and `claude-sonnet-5` as the default
+model.
+
+The one decision that didn't port: vibecad runs the `anthropic` **Python**
+SDK in a child process because FreeCAD is already Python. Kdenlive is
+C++/Qt with no Python layer, so the equivalent here is a pure-Qt client —
+`QNetworkAccessManager` streams `POST /v1/messages` (SSE), a small
+incremental parser rebuilds the assistant message from the event stream,
+and on `stop_reason == "tool_use"` the loop runs the requested tools and
+feeds results back. It's event-driven on the GUI thread, so no worker
+thread is needed. Chose this over a bundled Python sidecar to keep
+vibecut single-language and add nothing to the (rebased-often, fragile)
+Flatpak manifest.
+
+Landed in `src/vibecut/`:
+
+- `sseparser.h` — header-only, dependency-free SSE stream parser
+  (buffers partial records across arbitrary network chunk boundaries).
+- `vibecutagent.{h,cpp}` — the Anthropic client + tool-use loop.
+- `vibecuttools.{h,cpp}` — the Native-mode tool surface: `timeline_list_clips`,
+  `timeline_get_selection`, `effect_apply` (allowlisted; `denoise` →
+  `ladspa.9354877`, the RNNoise effect), `ask_user`.
+- `vibecutdock.{h,cpp}` — the panel: transcript + prompt line, registered
+  on the main window as a KDDockWidgets panel next to Library / Markers /
+  Speech Editor.
+- `tests/vibecuttest.cpp` — Catch2 tests for the SSE parser, the effect
+  allowlist, and the tool-schema shape.
+
+API key for this first cut comes from `ANTHROPIC_API_KEY` in the
+environment; KWallet + a settings page come later.
+
+Build snags: one real bug (`qAsConst` needs `<QtGlobal>`; dropped it and
+iterated the array directly) and one self-inflicted — adding `--ccache`
+to the flatpak-builder invocation changed the module cache key and forced
+MLT / OTIO / kddockwidgets to rebuild once. Both fixed; the fork now
+builds, installs, and runs (`kdenlive 26.11.70`), and the SSE parser's
+tricky cases (split mid-token, multiple events per chunk, CRLF,
+multi-line `data:`) are verified.
+
+Not yet done: driving the whole loop against the live API with a real
+key and a real project — "remove background noise from the selected
+clip" landing the RNNoise effect on the clip's stack.

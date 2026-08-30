@@ -60,8 +60,14 @@ a multi-day undertaking, so this uses Kdenlive's own Flatpak manifest
 instead — same path their CI uses:
 
 ```
-flatpak-builder --user --force-clean ~/data/programming/vibecut-buildir .flatpak-manifest.json
+flatpak-builder --user --force-clean --ccache ~/data/programming/vibecut-buildir .flatpak-manifest.json
 ```
+
+Add `--install` to the same command to install after building. The
+`--ccache` flag makes kdenlive rebuilds fast (only changed TUs
+recompile); it is part of the invocation now, so **always pass it** —
+adding or dropping a flag changes flatpak-builder's module cache key and
+forces MLT / OTIO / kddockwidgets to rebuild once.
 
 Needs `flatpak-builder` (apt) and `org.kde.Sdk//6.11` +
 `org.kde.Platform//6.11` (flathub, `--user` install) — both already
@@ -91,21 +97,37 @@ running from a previous session.
 
 ## Where things stood at last handover
 
-Build was mid-compile (past all config issues, into the real dependency
-chain — gavl, x264, MLT, Intel media SDK, glaxnimate, then Kdenlive
-itself). Not yet confirmed the binary actually runs.
+The fork builds, installs, and runs (`kdenlive 26.11.70`). The assistant
+panel is wired end to end in `src/vibecut/` (see the 2026-08-30 DEVLOG
+entry for the design rationale):
+
+- `sseparser.h` — SSE stream parser (header-only, tested).
+- `vibecutagent.{h,cpp}` — Anthropic `POST /v1/messages` streaming client
+  + tool-use loop, pure Qt (`QNetworkAccessManager`), event-driven on the
+  GUI thread. Model `claude-sonnet-5`, key from `ANTHROPIC_API_KEY`.
+- `vibecuttools.{h,cpp}` — Native-mode tools: `timeline_list_clips`,
+  `timeline_get_selection`, `effect_apply` (allowlist-guarded:
+  `denoise` → `ladspa.9354877` RNNoise), `ask_user`. Each has a
+  JSON-Schema spec + `{"ok": bool, ...}` result, mirroring vibecad.
+- `vibecutdock.{h,cpp}` — the panel, registered via `addDock()` in
+  `mainwindow.cpp` (KDDockWidgets, hidden by default, toggle under
+  Interface actions).
+- `tests/vibecuttest.cpp` — Catch2 tests (SSE parser verified standalone
+  in the SDK sandbox; the full `tests/` tree isn't built by the Flatpak
+  manifest).
 
 **Next steps, in order:**
-1. Check `build.log` — if finished, verify the built Kdenlive actually
-   launches (`flatpak-builder --run ~/data/programming/vibecut-buildir .flatpak-manifest.json kdenlive`
-   or similar — check flatpak-builder docs for the exact run invocation).
-2. First proof of concept: natural-language noise removal. Kdenlive
-   already ships the effect (`data/effects/ladspa/ladspa_librnnoise.xml`)
-   — this needs a chat dock panel + the smallest possible Native-mode
-   command surface, not new video engineering. Proves the whole
-   NL → agent → Kdenlive-action pipeline cheaply.
-3. From there, build out the Native-mode command surface and the
-   VibeScript sandbox incrementally.
+1. Drive the loop against the live API: export `ANTHROPIC_API_KEY`, open
+   a project with an audio clip, open the VibeCut panel, ask "remove
+   background noise from the selected clip", confirm the RNNoise effect
+   lands on the clip's effect stack. If the model narrates tool calls
+   instead of emitting them, flip `thinking` from `disabled` to
+   `{"type":"adaptive"}` in `vibecutagent.cpp` (the stream reconstruction
+   already tolerates thinking blocks).
+2. Key storage: KWallet (KDE-native equivalent of vibecad's `keyring`)
+   + a settings page, replacing the env-var-only stopgap.
+3. Grow the Native-mode tool surface one reviewed entry at a time; then
+   the VibeScript (`QJSEngine`) sandbox.
 
 ## Feature wishlist (user's original list, bucketed by implementation strategy)
 

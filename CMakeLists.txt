@@ -124,6 +124,7 @@ find_package(Qt${QT_MAJOR_VERSION}
     QuickWidgets
     Multimedia
     MultimediaWidgets
+    Network
     NetworkAuth
     SvgWidgets
     Xml
