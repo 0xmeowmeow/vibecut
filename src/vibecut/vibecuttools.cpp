@@ -428,7 +428,11 @@ void VibeCutTools::continueSpeechSetup(const QString &model)
 QJsonObject VibeCutTools::toolSpeechStatus()
 {
     SpeechToTextWhisper *w = whisperEngine();
-    w->checkVenv(false, false); // refresh the cached status (starts Unknown until probed) rather than report stale state
+    // checkSetup(), not checkVenv(): the latter's speech_system_python fast
+    // path never updates the cached status, which would leave a
+    // user-prepared system Python stuck reporting Unknown forever.
+    bool newInstall = false;
+    w->checkSetup(false, &newInstall);
     QJsonArray models;
     for (const QString &m : w->getInstalledModels()) {
         models.append(m);
@@ -459,14 +463,17 @@ QJsonObject VibeCutTools::toolSpeechSetup(const QJsonObject &input)
     m_pendingModel = model;
 
     // Refresh the cached status before branching - it starts Unknown until
-    // something actually probes the venv, and installMissingDependencies()
-    // alone can never create a venv from scratch (it calls a private helper
-    // whose forceInstall defaults to false, so on a fresh system it silently
-    // does nothing - no venv, no signal, no error). Mirror the exact switch
-    // Kdenlive's own "Install" button uses
-    // (PythonDependencyMessage in abstractpythoninterface.cpp) instead of
-    // guessing at a single call.
-    w->checkVenv(false, false);
+    // something actually probes it. checkSetup() (not checkVenv()) is the
+    // right refresh call: checkVenv()'s speech_system_python fast path
+    // returns true without ever updating m_installStatus, so a user-prepared
+    // system Python (Settings > Speech, or KdenliveSettings::speech_system_python)
+    // would stay stuck reporting Unknown forever; checkSetup() marks it
+    // Installed the moment python+pip resolve, in either mode. Also mirrors
+    // the exact switch Kdenlive's own "Install" button uses
+    // (PythonDependencyMessage in abstractpythoninterface.cpp) for the
+    // bootstrap-from-scratch path, instead of guessing at a single call.
+    bool newInstall = false;
+    w->checkSetup(false, &newInstall);
     switch (w->status()) {
     case AbstractPythonInterface::Installed:
         continueSpeechSetup(model);
