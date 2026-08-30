@@ -60,6 +60,17 @@ QString VibeCutTools::resolveEffectId(const QString &key)
     return effectAllowlist().value(key).toString();
 }
 
+int VibeCutTools::selectedClipId() const
+{
+    TimelineController *controller = currentController();
+    std::shared_ptr<TimelineItemModel> model = currentModel();
+    if (!controller || !model) {
+        return -1;
+    }
+    const int cid = controller->getMainSelectedClip();
+    return (cid != -1 && model->isClip(cid)) ? cid : -1;
+}
+
 QJsonArray VibeCutTools::schemas() const
 {
     const QJsonObject noArgs{{QStringLiteral("type"), QStringLiteral("object")},

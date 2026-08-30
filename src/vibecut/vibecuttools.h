@@ -40,6 +40,10 @@ public:
      *  guard rail — the model cannot apply anything not listed here. */
     static QString resolveEffectId(const QString &key);
 
+    /** Id of the currently selected timeline clip, or -1 if nothing (or no
+     *  timeline). Used by the dock to gate suggestions on a valid selection. */
+    int selectedClipId() const;
+
 Q_SIGNALS:
     /** Emitted when the model calls the ask_user tool. */
     void userQuestionRaised(const QString &question);
