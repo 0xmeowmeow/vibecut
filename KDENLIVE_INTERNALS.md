@@ -130,29 +130,65 @@ defaults to `false`; with no venv, that hits `checkVenv(false, false)` →
 silently reports `{"started": true}` forever. The exact tell in the
 terminal log: `"=== CHECKING SETUP...NO!!!"`.
 
-**Bypassing this entirely** (recommended when Kdenlive's own bootstrap
-is being unreliable, e.g. it segfaulted mid-install once in testing):
-Kdenlive already supports pointing it at a Python environment prepared
-outside its control —
+**Superseded**: after this state machine caused three separate real
+failures in testing (a crash, a silent no-op, a documented setting that
+wasn't honored — see `vibecut-bypass-unreliable-subsystems` in project
+memory), vibecut stopped depending on `AbstractPythonInterface` for
+Whisper entirely. `src/vibecut/vibecuttools.{h,cpp}` now drives its own
+venv (`QStandardPaths::AppDataLocation + "/vibecut-whisper-venv"`) with
+plain `QProcess` calls, reusing only the static, stable parts of
+Kdenlive's own Whisper support — its bundled scripts under
+`scripts/whisper/`, located via the same `QStandardPaths::locate`
+pattern `AbstractPythonInterface::runConcurrentScript` uses internally.
+Everything below this point in the section is now historical — what the
+*old*, no-longer-used code path did — kept for context and in case a
+future optional feature (SAM, seamless translation) still goes through
+it.
+
+**The scripts' actual CLI contracts** (verified by reading the scripts
+directly and running each stage headless via `flatpak run --command=sh
+org.kde.kdenlive`, not by trusting the old code's assumptions — one of
+which turned out wrong):
+
+- `whisperquery.py task=download` takes `url=<full model URL>` and
+  `download_root=<directory>` — **not** `model=<name>`. The old bypass
+  code (and this doc, until now) assumed `model=` because that's the
+  name `WhisperDownload`'s dialog surfaces to the user; the actual
+  script only understands a literal URL. Get it via `task=list` first,
+  which prints every `<alias> : <url>` pair straight from
+  openai-whisper's own `_MODELS` table (plus a trailing `root_folder :
+  <path>` line — skip it), then pass that URL through. This also
+  matters for *detecting* whether a model is installed: several aliases
+  share one file (`turbo` and `large-v3-turbo` both resolve to
+  `large-v3-turbo.pt`; `large` and `large-v3` both resolve to
+  `large-v3.pt`), so checking for a literal `<model>.pt` on disk silently
+  misses those — check for `QFileInfo(url).fileName()` instead.
+- `whisperquery.py task=list`'s output is pure local computation (reads
+  `whisper._MODELS`, no network) — safe to call synchronously and often.
+- `whispertosrt.py <audio> <model> [kwargs...]` — positional args are
+  audio source path and model name; no explicit output-path argument
+  despite what its own header comment claims. It writes `<audio
+  basename>.srt` into `os.path.dirname(<audio>)` itself (via
+  `whispertotext.run_whisper`'s `output_dir=` kwarg it constructs
+  internally) — the caller has to know that convention, not just pass a
+  desired path.
+- Standard OpenAI Whisper model names apply (`tiny`, `base`, `small`,
+  `medium`, `turbo`, `large-v3`, ...); `turbo` is Kdenlive's own UI
+  default and vibecut's too.
+
+The now-historical `speech_system_python` bypass setting, for reference:
+Kdenlive supports pointing `AbstractPythonInterface` at a Python
+environment prepared outside its control —
 `KdenliveSettings::speech_system_python` (bool) +
 `speech_system_python_path` (path to a `python3` with a sibling `pip3`),
-KCFG group `[speech]` in `kdenliverc`. Create a normal venv in a
-terminal, `pip install -r data/scripts/whisper/requirements-whisper.txt`
-(the exact dependency list Kdenlive's own Whisper feature uses — also
-sets `torch`, `openai-whisper`, `srt` and conditionally `triton`), write
-`speech_system_python=true` / `speech_system_python_path=<path>` into
-`~/.var/app/org.kde.kdenlive/config/kdenliverc` under `[speech]`. No
-GUI, no blocking dialog, no background thread inside Kdenlive at all —
-the whole install runs as a normal, observable terminal process.
-
-**Model downloads** (once dependencies are ready): the dialog-based
-`installNewModel()` pops its own separate window — for a headless
-trigger use `AbstractPythonInterface::runConcurrentScript("whisper/
-whisperquery.py", {"task=download", "model=<name>"}, /*feedback=*/true)`
-directly instead, same as `WhisperDownload`'s dialog does internally.
-Standard OpenAI Whisper model names apply (`tiny`, `base`, `small`,
-`medium`, `turbo`, `large-v3`, ...); `turbo` is Kdenlive's own UI
-default.
+KCFG group `[speech]` in `kdenliverc`. In testing this was set correctly
+(confirmed via `kreadconfig6`) and the pointed-at venv was independently
+verified fully functional, yet Kdenlive's running process kept resolving
+to its own internal venv anyway through every tested code path — root
+cause never pinned down (likely some KConfig caching or
+initialization-order issue). This is exactly the kind of unreliability
+that motivated dropping the whole state machine rather than chasing it
+further.
 
 ## Flatpak build system
 

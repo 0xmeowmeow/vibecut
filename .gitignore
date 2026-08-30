@@ -28,4 +28,5 @@ kde-ci-reports/*
 /.flatpak-builder/
 /build.log
 /install.log
+/kdenlive-run.log
 /.vibecut-scratch/

@@ -7,13 +7,13 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QMap>
 #include <QObject>
 #include <QString>
 
 #include <functional>
 #include <memory>
 
-class SpeechToTextWhisper;
 class TimelineItemModel;
 
 /** @brief Native-mode tool surface exposed to the assistant.
@@ -73,8 +73,37 @@ private:
     QJsonObject toolSpeechSetup(const QJsonObject &input);
     QJsonObject toolGenerateSubtitles(const QJsonObject &input);
 
-    SpeechToTextWhisper *whisperEngine();
-    void continueSpeechSetup(const QString &model);
+    // --- Whisper: entirely vibecut-owned, independent of Kdenlive's own
+    // Python-plugin install machinery (AbstractPythonInterface). That
+    // machinery proved unreliable in practice (one crash, one silent
+    // no-op, one documented setting that wasn't honored) after the actual
+    // call-path bugs in it had already been found and fixed - so rather
+    // than keep debugging someone else's state machine, this drives a
+    // small, fully-owned environment directly. Reuses only the static,
+    // stable parts of Kdenlive's own Whisper support: its bundled Python
+    // scripts, called as plain command-line tools.
+    QString vibecutVenvDir() const;
+    QString vibecutVenvPython() const;
+    static QString whisperScript(const QString &relativeName);
+    static QString whisperRequirementsFile();
+    static QString whisperModelCacheDir();
+    bool vibecutDepsReady() const;
+    /** Model alias (e.g. "turbo") -> its real download URL, straight from
+     *  whisperquery.py's own `task=list` (which reads openai-whisper's
+     *  `_MODELS` table) rather than guessing at a `<model>.pt` filename
+     *  convention - several aliases share one file (e.g. "turbo" and
+     *  "large-v3-turbo" both download large-v3-turbo.pt), so the URL's
+     *  basename, not the alias, is the real thing to check on disk. Requires
+     *  the venv's whisper package to already be importable; returns an empty
+     *  map otherwise. */
+    QMap<QString, QString> whisperModelUrls() const;
+    /** Whether @p model's backing file already exists in whisperModelCacheDir(). */
+    bool whisperModelDownloaded(const QString &model, const QMap<QString, QString> &urls) const;
+    void beginCreateVenv();
+    void beginInstallDeps();
+    void beginDownloadModel(const QString &model);
+    void speechSetupFailed(const QString &message);
+
     bool ensureSubtitleTrack(const std::shared_ptr<TimelineItemModel> &model);
     QString exportZoneAudio(const std::shared_ptr<TimelineItemModel> &model, int zoneIn, int zoneOut, QString &error);
 
@@ -88,7 +117,8 @@ private:
     int resolveTargetClip(const std::shared_ptr<TimelineItemModel> &model, const QJsonObject &input,
                           const std::function<bool(int)> &isEligible, QString &error);
 
-    SpeechToTextWhisper *m_whisper = nullptr;
-    QString m_pendingModel;      // non-empty while waiting for deps before downloading a model
+    enum class SpeechStage { Idle, CreatingVenv, InstallingDeps, DownloadingModel };
+    SpeechStage m_speechStage = SpeechStage::Idle;
+    QString m_pendingModel; // the model being set up while m_speechStage != Idle
     bool m_subtitleJobRunning = false;
 };

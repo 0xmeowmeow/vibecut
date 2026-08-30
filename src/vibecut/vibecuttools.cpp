@@ -11,8 +11,6 @@
 #include "effects/effectstack/model/effectstackmodel.hpp"
 #include "kdenlivesettings.h"
 #include "mainwindow.h"
-#include "pythoninterfaces/abstractpythoninterface.h"
-#include "pythoninterfaces/speechtotextwhisper.h"
 #include "timeline2/model/timelineitemmodel.hpp"
 #include "timeline2/model/timelinemodel.hpp"
 #include "timeline2/view/timelinecontroller.h"
@@ -29,6 +27,7 @@
 #include <QFileInfo>
 #include <QProcess>
 #include <QReadLocker>
+#include <QStandardPaths>
 #include <QTemporaryFile>
 
 namespace {
@@ -387,118 +386,259 @@ QJsonObject VibeCutTools::toolAskUser(const QJsonObject &input)
                        {QStringLiteral("note"), QStringLiteral("Question shown to the user; await their next message.")}};
 }
 
-SpeechToTextWhisper *VibeCutTools::whisperEngine()
+QString VibeCutTools::vibecutVenvDir() const
 {
-    if (m_whisper) {
-        return m_whisper;
-    }
-    m_whisper = new SpeechToTextWhisper(this);
-    connect(m_whisper, &AbstractPythonInterface::dependenciesAvailable, this, [this]() {
-        if (!m_pendingModel.isEmpty()) {
-            continueSpeechSetup(m_pendingModel);
-        }
-    });
-    connect(m_whisper, &AbstractPythonInterface::dependenciesMissing, this, [this](const QStringList &messages) {
-        Q_EMIT backgroundProgress(QStringLiteral("Whisper setup incomplete: %1").arg(messages.join(QStringLiteral("; "))));
-        m_pendingModel.clear();
-    });
-    connect(m_whisper, &AbstractPythonInterface::setupError, this, [this](const QString &message) {
-        Q_EMIT backgroundProgress(QStringLiteral("Whisper setup error: %1").arg(message));
-        m_pendingModel.clear();
-    });
-    connect(m_whisper, &AbstractPythonInterface::installFeedback, this,
-            [this](const QString &message) { Q_EMIT backgroundProgress(message); });
-    connect(m_whisper, &AbstractPythonInterface::concurrentScriptFinished, this, [this](const QString &script, const QStringList &args) {
-        Q_UNUSED(script)
-        if (args.contains(QStringLiteral("task=download"))) {
-            Q_EMIT backgroundProgress(QStringLiteral("Model download finished. Call speech_status to confirm it installed correctly."));
-            m_pendingModel.clear();
-        }
-    });
-    return m_whisper;
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/vibecut-whisper-venv");
 }
 
-void VibeCutTools::continueSpeechSetup(const QString &model)
+QString VibeCutTools::vibecutVenvPython() const
 {
-    Q_EMIT backgroundProgress(QStringLiteral("Whisper is ready — downloading model '%1' now…").arg(model));
-    whisperEngine()->runConcurrentScript(QStringLiteral("whisper/whisperquery.py"),
-                                         {QStringLiteral("task=download"), QStringLiteral("model=%1").arg(model)}, true);
+    return vibecutVenvDir() + QStringLiteral("/bin/python3");
+}
+
+QString VibeCutTools::whisperScript(const QString &relativeName)
+{
+    // Same lookup Kdenlive's own AbstractPythonInterface uses for its bundled
+    // scripts - we just call them as plain command-line tools instead of
+    // going through its install/venv state machine.
+    return QStandardPaths::locate(QStandardPaths::AppDataLocation, QStringLiteral("scripts/%1").arg(relativeName));
+}
+
+QString VibeCutTools::whisperRequirementsFile()
+{
+    return whisperScript(QStringLiteral("whisper/requirements-whisper.txt"));
+}
+
+QString VibeCutTools::whisperModelCacheDir()
+{
+    // Matches openai-whisper's own default download_root (~/.cache/whisper,
+    // or $XDG_CACHE_HOME/whisper - set inside the flatpak sandbox) so models
+    // downloaded via our venv are found the same way whisper itself would
+    // find them.
+    return QStandardPaths::writableLocation(QStandardPaths::GenericCacheLocation) + QStringLiteral("/whisper");
+}
+
+bool VibeCutTools::vibecutDepsReady() const
+{
+    const QString python = vibecutVenvPython();
+    if (!QFile::exists(python)) {
+        return false;
+    }
+    // Actually try to import the packages, not just check that python/pip
+    // executables exist - that weaker check is exactly what let Kdenlive's
+    // own checkSetup() report "Installed" for a venv with nothing installed
+    // in it.
+    QProcess check;
+    check.start(python, {QStringLiteral("-c"), QStringLiteral("import whisper, torch")});
+    if (!check.waitForStarted(3000)) {
+        return false;
+    }
+    check.waitForFinished(10000);
+    return check.exitStatus() == QProcess::NormalExit && check.exitCode() == 0;
+}
+
+QMap<QString, QString> VibeCutTools::whisperModelUrls() const
+{
+    QMap<QString, QString> result;
+    const QString script = whisperScript(QStringLiteral("whisper/whisperquery.py"));
+    if (script.isEmpty()) {
+        return result;
+    }
+    QProcess proc;
+    proc.start(vibecutVenvPython(), {script, QStringLiteral("task=list")});
+    if (!proc.waitForStarted(3000)) {
+        return result;
+    }
+    proc.waitForFinished(10000);
+    const QString output = QString::fromUtf8(proc.readAllStandardOutput());
+    for (const QString &line : output.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const int sep = line.indexOf(QStringLiteral(" : "));
+        if (sep < 0) {
+            continue;
+        }
+        const QString key = line.left(sep).trimmed();
+        if (key == QStringLiteral("root_folder")) {
+            continue; // last line of task=list output, not a model
+        }
+        result.insert(key, line.mid(sep + 3).trimmed());
+    }
+    return result;
+}
+
+bool VibeCutTools::whisperModelDownloaded(const QString &model, const QMap<QString, QString> &urls) const
+{
+    if (!urls.contains(model)) {
+        return false;
+    }
+    const QString fileName = QFileInfo(urls.value(model)).fileName();
+    return fileName.isEmpty() ? false : QFile::exists(whisperModelCacheDir() + QLatin1Char('/') + fileName);
+}
+
+void VibeCutTools::speechSetupFailed(const QString &message)
+{
+    m_speechStage = SpeechStage::Idle;
+    m_pendingModel.clear();
+    Q_EMIT backgroundProgress(message);
+}
+
+void VibeCutTools::beginCreateVenv()
+{
+    const QString python3 = QStandardPaths::findExecutable(QStringLiteral("python3"));
+    if (python3.isEmpty()) {
+        speechSetupFailed(QStringLiteral("No system python3 found to create the Whisper environment."));
+        return;
+    }
+    QDir().mkpath(QFileInfo(vibecutVenvDir()).absolutePath());
+    m_speechStage = SpeechStage::CreatingVenv;
+    Q_EMIT backgroundProgress(QStringLiteral("Creating a Python environment for Whisper (vibecut's own, separate from "
+                                              "Kdenlive's installer)…"));
+
+    auto *proc = new QProcess(this);
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    connect(proc, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this,
+            [this, proc](int exitCode, QProcess::ExitStatus status) {
+                const QString output = QString::fromUtf8(proc->readAll());
+                proc->deleteLater();
+                if (status != QProcess::NormalExit || exitCode != 0 || !QFile::exists(vibecutVenvPython())) {
+                    speechSetupFailed(QStringLiteral("Could not create the Whisper Python environment: %1")
+                                          .arg(output.trimmed().isEmpty() ? QStringLiteral("unknown error") : output.trimmed()));
+                    return;
+                }
+                beginInstallDeps();
+            });
+    proc->start(python3, {QStringLiteral("-m"), QStringLiteral("venv"), vibecutVenvDir()});
+}
+
+void VibeCutTools::beginInstallDeps()
+{
+    const QString reqFile = whisperRequirementsFile();
+    if (reqFile.isEmpty() || !QFile::exists(reqFile)) {
+        speechSetupFailed(QStringLiteral("Could not find Kdenlive's bundled Whisper requirements file."));
+        return;
+    }
+    m_speechStage = SpeechStage::InstallingDeps;
+    Q_EMIT backgroundProgress(
+        QStringLiteral("Installing Whisper's Python dependencies (includes PyTorch - can take a few minutes)…"));
+
+    auto *proc = new QProcess(this);
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    connect(proc, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this,
+            [this, proc](int exitCode, QProcess::ExitStatus status) {
+                const QString output = QString::fromUtf8(proc->readAll());
+                proc->deleteLater();
+                if (status != QProcess::NormalExit || exitCode != 0 || !vibecutDepsReady()) {
+                    const QString tail = output.right(2000).trimmed();
+                    speechSetupFailed(QStringLiteral("Installing Whisper's dependencies failed: %1")
+                                          .arg(tail.isEmpty() ? QStringLiteral("unknown error") : tail));
+                    return;
+                }
+                beginDownloadModel(m_pendingModel);
+            });
+    proc->start(vibecutVenvPython(),
+                {QStringLiteral("-m"), QStringLiteral("pip"), QStringLiteral("install"), QStringLiteral("-r"), reqFile});
+}
+
+void VibeCutTools::beginDownloadModel(const QString &model)
+{
+    const QString script = whisperScript(QStringLiteral("whisper/whisperquery.py"));
+    if (script.isEmpty()) {
+        speechSetupFailed(QStringLiteral("Could not find Kdenlive's bundled Whisper download script."));
+        return;
+    }
+    // whisperquery.py's task=download takes a literal url= and download_root=,
+    // not model= - looked wrong here once already (assumed model= from the
+    // old removed code without re-checking the script itself, and it failed
+    // immediately with "Please give an url and a path"). The url has to come
+    // from task=list (openai-whisper's own _MODELS table): several aliases
+    // share one file (turbo and large-v3-turbo both resolve to
+    // large-v3-turbo.pt), so hardcoding a naming convention would silently
+    // mis-detect which models are actually already downloaded.
+    const QMap<QString, QString> urls = whisperModelUrls();
+    if (!urls.contains(model)) {
+        speechSetupFailed(QStringLiteral("'%1' is not a known Whisper model name.").arg(model));
+        return;
+    }
+    const QString url = urls.value(model);
+    const QString cacheDir = whisperModelCacheDir();
+    QDir().mkpath(cacheDir);
+    const QString expectedFile = cacheDir + QLatin1Char('/') + QFileInfo(url).fileName();
+
+    m_speechStage = SpeechStage::DownloadingModel;
+    Q_EMIT backgroundProgress(QStringLiteral("Downloading the Whisper '%1' model…").arg(model));
+
+    auto *proc = new QProcess(this);
+    proc->setProcessChannelMode(QProcess::MergedChannels);
+    connect(proc, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this,
+            [this, proc, model, expectedFile](int exitCode, QProcess::ExitStatus status) {
+                const QString output = QString::fromUtf8(proc->readAll());
+                proc->deleteLater();
+                m_speechStage = SpeechStage::Idle;
+                m_pendingModel.clear();
+                // Trust the file on disk, not the exit code alone - whisper's
+                // own _download() can exit 0 having only partially written.
+                if (status != QProcess::NormalExit || exitCode != 0 || !QFile::exists(expectedFile)) {
+                    const QString tail = output.right(2000).trimmed();
+                    Q_EMIT backgroundProgress(QStringLiteral("Downloading model '%1' failed: %2")
+                                                  .arg(model, tail.isEmpty() ? QStringLiteral("unknown error") : tail));
+                    return;
+                }
+                Q_EMIT backgroundProgress(QStringLiteral("✓ Whisper is ready with the '%1' model.").arg(model));
+            });
+    proc->start(vibecutVenvPython(),
+                {script, QStringLiteral("task=download"), QStringLiteral("url=%1").arg(url), QStringLiteral("download_root=%1").arg(cacheDir)});
 }
 
 QJsonObject VibeCutTools::toolSpeechStatus()
 {
-    SpeechToTextWhisper *w = whisperEngine();
-    // checkSetup(), not checkVenv(): the latter's speech_system_python fast
-    // path never updates the cached status, which would leave a
-    // user-prepared system Python stuck reporting Unknown forever.
-    bool newInstall = false;
-    w->checkSetup(false, &newInstall);
+    const bool ready = vibecutDepsReady();
     QJsonArray models;
-    for (const QString &m : w->getInstalledModels()) {
-        models.append(m);
+    if (ready) {
+        const QMap<QString, QString> urls = whisperModelUrls();
+        for (auto it = urls.constBegin(); it != urls.constEnd(); ++it) {
+            if (whisperModelDownloaded(it.key(), urls)) {
+                models.append(it.key());
+            }
+        }
     }
     return QJsonObject{
         {QStringLiteral("ok"), true},
         {QStringLiteral("engine"), QStringLiteral("whisper")},
-        {QStringLiteral("dependencies_installed"), w->status() == AbstractPythonInterface::Installed},
+        {QStringLiteral("dependencies_installed"), ready},
         {QStringLiteral("models_installed"), models},
-        {QStringLiteral("setup_in_progress"), !m_pendingModel.isEmpty() || w->installInProcess()},
+        {QStringLiteral("setup_in_progress"), m_speechStage != SpeechStage::Idle},
     };
 }
 
 QJsonObject VibeCutTools::toolSpeechSetup(const QJsonObject &input)
 {
-    SpeechToTextWhisper *w = whisperEngine();
     const QString model = input.value(QStringLiteral("model")).toString(QStringLiteral("turbo"));
 
-    if (w->getInstalledModels().contains(model)) {
+    if (vibecutDepsReady() && whisperModelDownloaded(model, whisperModelUrls())) {
         return QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("already_installed"), true}, {QStringLiteral("model"), model}};
     }
-    if (!m_pendingModel.isEmpty()) {
+    if (m_speechStage != SpeechStage::Idle) {
         return QJsonObject{{QStringLiteral("ok"), true},
                            {QStringLiteral("started"), false},
                            {QStringLiteral("note"), QStringLiteral("A setup for model '%1' is already in progress.").arg(m_pendingModel)}};
     }
 
     m_pendingModel = model;
-
-    // Refresh the cached status before branching - it starts Unknown until
-    // something actually probes it. checkSetup() (not checkVenv()) is the
-    // right refresh call: checkVenv()'s speech_system_python fast path
-    // returns true without ever updating m_installStatus, so a user-prepared
-    // system Python (Settings > Speech, or KdenliveSettings::speech_system_python)
-    // would stay stuck reporting Unknown forever; checkSetup() marks it
-    // Installed the moment python+pip resolve, in either mode. Also mirrors
-    // the exact switch Kdenlive's own "Install" button uses
-    // (PythonDependencyMessage in abstractpythoninterface.cpp) for the
-    // bootstrap-from-scratch path, instead of guessing at a single call.
-    bool newInstall = false;
-    w->checkSetup(false, &newInstall);
-    switch (w->status()) {
-    case AbstractPythonInterface::Installed:
-        continueSpeechSetup(model);
-        break;
-    case AbstractPythonInterface::MissingDependencies:
-        Q_EMIT backgroundProgress(QStringLiteral("Setting up Whisper via Kdenlive's own installer — a confirmation "
-                                                  "dialog may appear; please click Continue."));
-        w->installMissingDependencies();
-        break;
-    case AbstractPythonInterface::InProgress:
-        break; // already running; the m_pendingModel guard above covers repeat clicks
-    case AbstractPythonInterface::Unknown:
-    case AbstractPythonInterface::NotInstalled:
-    case AbstractPythonInterface::Broken:
-    default:
-        Q_EMIT backgroundProgress(QStringLiteral("Creating a Python environment for Whisper via Kdenlive's own "
-                                                  "installer — a confirmation dialog may appear; please click Continue."));
-        w->checkVenv(false, true); // creates the venv, then chains into installMissingDependencies() itself
-        break;
+    // Pick up wherever the environment already is: skip venv creation if one
+    // exists, skip dep install if imports already succeed.
+    if (!QFile::exists(vibecutVenvPython())) {
+        beginCreateVenv();
+    } else if (!vibecutDepsReady()) {
+        beginInstallDeps();
+    } else {
+        beginDownloadModel(model);
     }
+
     return QJsonObject{
         {QStringLiteral("ok"), true},
         {QStringLiteral("started"), true},
         {QStringLiteral("model"), model},
-        {QStringLiteral("note"), QStringLiteral("Installing in the background via Kdenlive's own installer. Progress "
+        {QStringLiteral("note"), QStringLiteral("Setting up Whisper in the background, using vibecut's own Python "
+                                                "environment (independent of Kdenlive's own installer). Progress "
                                                 "appears in this panel on its own; call speech_status later to confirm.")},
     };
 }
@@ -619,11 +759,16 @@ QJsonObject VibeCutTools::toolGenerateSubtitles(const QJsonObject &input)
                            {QStringLiteral("note"), QStringLiteral("A subtitle generation job is already running.")}};
     }
 
-    SpeechToTextWhisper *w = whisperEngine();
-    if (w->status() != AbstractPythonInterface::Installed) {
+    if (!vibecutDepsReady()) {
         return err(QStringLiteral("Whisper is not set up yet. Call speech_setup first."));
     }
-    const QStringList installed = w->getInstalledModels();
+    const QMap<QString, QString> urls = whisperModelUrls();
+    QStringList installed;
+    for (auto it = urls.constBegin(); it != urls.constEnd(); ++it) {
+        if (whisperModelDownloaded(it.key(), urls)) {
+            installed << it.key();
+        }
+    }
     if (installed.isEmpty()) {
         return err(QStringLiteral("No Whisper model is installed yet. Call speech_setup first."));
     }
@@ -656,8 +801,14 @@ QJsonObject VibeCutTools::toolGenerateSubtitles(const QJsonObject &input)
         return err(exportError.isEmpty() ? QStringLiteral("Audio export failed.") : exportError);
     }
 
+    const QString script = whisperScript(QStringLiteral("whisper/whispertosrt.py"));
+    if (script.isEmpty()) {
+        QFile::remove(audioPath);
+        return err(QStringLiteral("Could not find Kdenlive's bundled Whisper transcription script."));
+    }
+
     const QString srtPath = QDir::temp().absoluteFilePath(QFileInfo(audioPath).completeBaseName() + QStringLiteral(".srt"));
-    QStringList arguments = {w->subtitleScript(), audioPath, useModel,
+    QStringList arguments = {script, audioPath, useModel,
                              QStringLiteral("ffmpeg_path=%1").arg(KdenliveSettings::ffmpegpath())};
     if (!KdenliveSettings::whisperDevice().isEmpty()) {
         arguments << QStringLiteral("device=%1").arg(KdenliveSettings::whisperDevice());
@@ -700,7 +851,7 @@ QJsonObject VibeCutTools::toolGenerateSubtitles(const QJsonObject &input)
                 proc->deleteLater();
             });
 
-    proc->start(w->venvPythonExecs().python, arguments);
+    proc->start(vibecutVenvPython(), arguments);
 
     return QJsonObject{
         {QStringLiteral("ok"), true},

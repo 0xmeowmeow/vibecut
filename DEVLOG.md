@@ -343,3 +343,49 @@ in the background" turn after turn with zero real progress ever showing
 up is exactly the kind of state that could produce a model with nothing
 coherent left to say. Not proven, but far more satisfying than the
 hypotheses already ruled out with hard data.
+
+## Whisper: dropped Kdenlive's own installer entirely
+
+Fixing `installMissingDependencies()`'s call path wasn't the end of it.
+Same session, three more real failures against the fixed code: a SIGSEGV
+mid-`checkpackages.py --upgrade` (confirmed via `coredumpctl`, though
+`coredumpctl list` also showed pre-existing crashes on this nightly from
+before any vibecut testing — some baseline instability isn't ours), a
+5.5-minute pip run that quit having installed nothing, and another
+SIGSEGV correlated with a second download call. Also chased, and never
+resolved: `KdenliveSettings::speech_system_python` pointed at a fully
+verified, working venv (confirmed both via `kreadconfig6` and by
+importing torch+whisper by hand inside the sandbox) — Kdenlive's running
+process still resolved to its own internal venv anyway, through every
+code path tried.
+
+Standing decision, generalized past just this one subsystem: when a
+specific Kdenlive subsystem proves unreliable *after* the real bug in it
+has already been traced and fixed, stop debugging that subsystem and
+wrap it out — drive a small, self-contained, vibecut-owned process for
+just that piece instead, reusing only the static parts of Kdenlive's own
+implementation (its bundled scripts, called as plain command-line
+tools). `AbstractPythonInterface`/`SpeechToTextWhisper` are gone from
+`vibecuttools.cpp` entirely now. In their place: a venv vibecut creates
+and owns at `QStandardPaths::AppDataLocation +
+"/vibecut-whisper-venv"`, driven by three chained `QProcess` stages
+(create venv → install deps → download model), each one verified against
+the filesystem before advancing to the next rather than trusted on exit
+code alone.
+
+Building that turned up one more real bug worth recording, in the
+*reused* part this time: the old code's `whisperquery.py task=download`
+call passed `model=<name>`, inherited from before without re-checking
+the script itself. The actual script wants `url=` and `download_root=`,
+full stop — `model=` isn't even a parameter it recognizes. Caught this
+the same way as the `installMissingDependencies()` bug: read the real
+script instead of trusting a plausible-looking prior call, then verified
+every stage live and headless inside the flatpak sandbox
+(`flatpak run --command=sh org.kde.kdenlive -c '...'`) before trusting
+any of it — venv creation, a real `pip install` landing torch 2.13 with
+CUDA available, a real model download (`tiny`, 72MB) landing at the
+exact path the C++ now checks for, and `whisper.load_model("tiny")`
+actually loading it onto `cuda:0`. Recorded the corrected contract (and
+why `<model>.pt` is the wrong thing to check for — several aliases share
+one file) in `KDENLIVE_INTERNALS.md` so it doesn't have to be
+re-derived.
