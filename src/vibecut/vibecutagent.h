@@ -51,6 +51,9 @@ Q_SIGNALS:
     void assistantMessage(const QString &text);
     /** A tool call is about to run (name + compact JSON of the arguments). */
     void toolInvoked(const QString &name, const QString &argsJson);
+    /** A tool call finished with {"ok": false, ...} — surfaced immediately so
+     *  a failure is never silently swallowed by an empty final reply. */
+    void toolFailed(const QString &name, const QString &errorMessage);
     /** The model called ask_user. */
     void userQuestionRaised(const QString &question);
     /** Any hard failure (no key, HTTP error, loop cap, …). */

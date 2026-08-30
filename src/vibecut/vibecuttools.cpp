@@ -6,6 +6,7 @@
 #include "vibecuttools.h"
 
 #include "core.h"
+#include "effects/effectstack/model/effectstackmodel.hpp"
 #include "mainwindow.h"
 #include "timeline2/model/timelinemodel.hpp"
 #include "timeline2/view/timelinecontroller.h"
@@ -211,11 +212,38 @@ QJsonObject VibeCutTools::toolApplyEffect(const QJsonObject &input)
         return err(QStringLiteral("Clip id %1 does not exist on the timeline.").arg(clipId));
     }
 
-    controller->addEffectToClip(assetId, clipId);
+    std::shared_ptr<EffectStackModel> stack = model->getClipEffectStack(clipId);
+    if (!stack) {
+        return err(QStringLiteral("Clip %1 has no effect stack.").arg(clipId));
+    }
+    if (stack->hasFilter(assetId)) {
+        return QJsonObject{{QStringLiteral("ok"), true},
+                           {QStringLiteral("applied"), key},
+                           {QStringLiteral("asset_id"), assetId},
+                           {QStringLiteral("clip_id"), clipId},
+                           {QStringLiteral("already_present"), true}};
+    }
+
+    // addEffectToClip() itself returns void, so it cannot tell us whether
+    // Kdenlive actually accepted the effect. Call the underlying model method
+    // directly instead: it reports which clips it actually touched, and we
+    // re-check the stack afterward so this tool never claims success it can't
+    // back up.
+    const QVariantList affected = model->addClipEffect(clipId, assetId);
+    const bool confirmed = affected.contains(clipId) && stack->hasFilter(assetId);
+    if (!confirmed) {
+        return err(QStringLiteral("Kdenlive did not add '%1' to clip %2 — it never showed up on the "
+                                   "clip's effect stack. The clip may not support an audio effect, or the "
+                                   "LADSPA plugin failed to load.")
+                       .arg(key)
+                       .arg(clipId));
+    }
     return QJsonObject{{QStringLiteral("ok"), true},
                        {QStringLiteral("applied"), key},
                        {QStringLiteral("asset_id"), assetId},
-                       {QStringLiteral("clip_id"), clipId}};
+                       {QStringLiteral("clip_id"), clipId},
+                       {QStringLiteral("already_present"), false},
+                       {QStringLiteral("effect_count_on_clip"), stack->rowCount()}};
 }
 
 QJsonObject VibeCutTools::toolAskUser(const QJsonObject &input)

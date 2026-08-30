@@ -28,7 +28,9 @@ const QString kSystemPrompt = QStringLiteral(
     "timeline through the provided tools only. Never invent clip ids or effect names: read the timeline "
     "or the selection first, then act. Prefer the current selection when the user does not name a clip. "
     "Use ask_user only when the answer changes which clip or effect to touch. When a tool fails, report "
-    "what failed instead of guessing. Keep replies short.");
+    "exactly what failed instead of guessing, and never tell the user something worked unless the tool "
+    "result confirms it. effect_apply reports already_present and effect_count_on_clip on success — say "
+    "concretely what was added (or that it was already there), not just 'done'. Keep replies short.");
 
 QByteArray compact(const QJsonObject &obj)
 {
@@ -235,6 +237,9 @@ void VibeCutAgent::finishTurn()
             Q_EMIT toolInvoked(name, QString::fromUtf8(compact(input)));
 
             const QJsonObject result = m_tools->invoke(name, input);
+            if (!result.value(QStringLiteral("ok")).toBool()) {
+                Q_EMIT toolFailed(name, result.value(QStringLiteral("error")).toString(QStringLiteral("unknown error")));
+            }
             toolResults.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("tool_result")},
                                            {QStringLiteral("tool_use_id"), id},
                                            {QStringLiteral("content"), QString::fromUtf8(compact(result))}});

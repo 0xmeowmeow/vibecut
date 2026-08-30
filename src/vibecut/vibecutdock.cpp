@@ -129,6 +129,9 @@ VibeCutDock::VibeCutDock(QWidget *parent)
             appendLine(friendly, QStringLiteral("#888"));
         }
     });
+    connect(m_agent, &VibeCutAgent::toolFailed, this, [this](const QString &name, const QString &error) {
+        appendLine(i18n("⚠ %1 failed: %2", name, error), QStringLiteral("#c33"));
+    });
     connect(m_agent, &VibeCutAgent::userQuestionRaised, this, [this](const QString &q) {
         appendLine(QStringLiteral("VibeCut asks: %1").arg(q), QStringLiteral("#c80"));
     });
