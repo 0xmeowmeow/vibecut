@@ -98,5 +98,9 @@ private:
     bool m_turnFinished = false;
     int m_toolTurns = 0;
 
+    // --- per-exchange state (one user message through to a real reply) ---
+    bool m_anyToolCalledThisExchange = false; ///< did any tool_use happen since the user's last message
+    bool m_retriedEmptyTurn = false;          ///< have we already retried once on a truly empty response
+
     enum { kMaxToolTurns = 8 };
 };

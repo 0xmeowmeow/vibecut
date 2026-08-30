@@ -74,6 +74,8 @@ void VibeCutAgent::sendUserMessage(const QString &text)
     m_messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
                                   {QStringLiteral("content"), text}});
     m_toolTurns = 0;
+    m_anyToolCalledThisExchange = false;
+    m_retriedEmptyTurn = false;
     startRequest();
 }
 
@@ -225,10 +227,28 @@ void VibeCutAgent::finishTurn()
     }
     m_turnFinished = true;
 
-    m_messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
-                                  {QStringLiteral("content"), m_blocks}});
+    const bool normalStop = m_stopReason == QLatin1String("end_turn") || m_stopReason.isEmpty();
+
+    if (m_blocks.isEmpty() && normalStop && !m_anyToolCalledThisExchange && !m_retriedEmptyTurn) {
+        // The model produced nothing whatsoever - no text, no tool call - on
+        // what otherwise looks like a normal completion. This is exactly the
+        // failure mode that used to show a false "Done.": don't record an
+        // empty assistant turn (it isn't valid history to replay anyway),
+        // and give it one clean retry before giving up honestly.
+        m_retriedEmptyTurn = true;
+        qWarning().noquote() << QStringLiteral("[VibeCut] empty end_turn with no tool calls this exchange — retrying once");
+        Q_EMIT statusChanged(QStringLiteral("Retrying (no response)…"));
+        startRequest();
+        return;
+    }
+
+    if (!m_blocks.isEmpty()) {
+        m_messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
+                                      {QStringLiteral("content"), m_blocks}});
+    }
 
     if (m_stopReason == QLatin1String("tool_use")) {
+        m_anyToolCalledThisExchange = true;
         if (++m_toolTurns > kMaxToolTurns) {
             fail(QStringLiteral("Stopped after %1 tool turns.").arg(kMaxToolTurns));
             return;
@@ -280,11 +300,21 @@ void VibeCutAgent::finishTurn()
         return;
     }
     if (finalText.isEmpty()) {
-        // Genuinely no text and no further tool call, on a normal end_turn -
-        // dump what the model actually sent so this is diagnosable from the
-        // terminal instead of guessed at.
-        qWarning().noquote() << QStringLiteral("[VibeCut] turn ended with empty text on end_turn; blocks=%1")
-                                     .arg(QString::fromUtf8(compact(QJsonObject{{QStringLiteral("blocks"), m_blocks}})));
+        qWarning().noquote() << QStringLiteral("[VibeCut] turn ended with empty text on end_turn (tool called this "
+                                                "exchange: %1); blocks=%2")
+                                     .arg(m_anyToolCalledThisExchange ? QStringLiteral("yes") : QStringLiteral("no"),
+                                          QString::fromUtf8(compact(QJsonObject{{QStringLiteral("blocks"), m_blocks}})));
+        if (!m_anyToolCalledThisExchange) {
+            // No tool ever ran, and even the retry came back with nothing.
+            // This is a genuine dead end, not a success - never call this
+            // "Done."
+            fail(QStringLiteral("The model didn't respond or take any action. Try again or rephrase."));
+            return;
+        }
+        // A tool did run and its own result/failure was already shown above
+        // this line in the panel (toolInvoked/toolFailed); the model just
+        // didn't add closing narration. assistantMessage("") is the panel's
+        // cue to show a plain "finished" marker, not a fresh claim of success.
     }
     Q_EMIT assistantMessage(finalText);
     Q_EMIT statusChanged(QStringLiteral("Ready"));

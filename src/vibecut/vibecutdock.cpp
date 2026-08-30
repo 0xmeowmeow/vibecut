@@ -117,10 +117,12 @@ VibeCutDock::VibeCutDock(QWidget *parent)
     });
     connect(m_agent, &VibeCutAgent::assistantMessage, this, [this](const QString &t) {
         if (!m_streamStarted) {
-            // The system prompt asks for short replies, so a turn that only
-            // calls tools can come back with no closing text at all - always
-            // leave a visible line so it's never ambiguous whether it ran.
-            appendLine(t.isEmpty() ? i18n("✓ Done.") : QStringLiteral("VibeCut: %1").arg(t),
+            // assistantMessage("") only ever arrives after at least one real
+            // tool call this exchange (the agent turns a truly empty,
+            // nothing-happened turn into errorOccurred instead) - so this is
+            // a closing marker for what the lines above already showed, not
+            // an independent claim that something worked.
+            appendLine(t.isEmpty() ? i18n("✓ Finished (see above).") : QStringLiteral("VibeCut: %1").arg(t),
                        t.isEmpty() ? QStringLiteral("#2a8") : QString());
         }
         m_streamStarted = false;
