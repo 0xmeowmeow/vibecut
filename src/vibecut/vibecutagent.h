@@ -70,6 +70,11 @@ Q_SIGNALS:
 public Q_SLOTS:
     /** Append a user message and start (or continue) the conversation. */
     void sendUserMessage(const QString &text);
+    /** Drop all history and start clean. Conversation history otherwise
+     *  grows for as long as the panel/process lives with no cap - if a long
+     *  session ever turns out to correlate with empty-turn failures, this is
+     *  the workaround until real compaction exists. */
+    void resetConversation();
 
 private Q_SLOTS:
     void onReadyRead();
@@ -81,6 +86,7 @@ private:
     void finishTurn();
     void fail(const QString &message);
     void resetStreamState();
+    QString historyDiagnostic() const;
 
     QNetworkAccessManager *m_nam;
     QNetworkReply *m_reply = nullptr;

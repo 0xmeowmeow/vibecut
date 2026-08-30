@@ -45,6 +45,17 @@ QByteArray compact(const QJsonObject &obj)
 }
 } // namespace
 
+// Recurring empty-turn reports have all come from a panel that had already
+// been through several prior exchanges in the same process lifetime - this
+// makes the accumulated history size visible in the diagnostic instead of
+// having to guess whether context growth is the actual trigger.
+QString VibeCutAgent::historyDiagnostic() const
+{
+    return QStringLiteral("messages=%1 approx_bytes=%2")
+        .arg(m_messages.size())
+        .arg(QJsonDocument(m_messages).toJson(QJsonDocument::Compact).size());
+}
+
 VibeCutAgent::VibeCutAgent(VibeCutTools *tools, QObject *parent)
     : QObject(parent)
     , m_nam(new QNetworkAccessManager(this))
@@ -80,6 +91,21 @@ void VibeCutAgent::sendUserMessage(const QString &text)
     m_anyToolCalledThisExchange = false;
     m_retriedEmptyTurn = false;
     startRequest();
+}
+
+void VibeCutAgent::resetConversation()
+{
+    if (m_reply) {
+        QNetworkReply *r = m_reply;
+        m_reply = nullptr;
+        r->abort();
+        r->deleteLater();
+    }
+    m_messages = QJsonArray();
+    m_toolTurns = 0;
+    m_anyToolCalledThisExchange = false;
+    m_retriedEmptyTurn = false;
+    Q_EMIT statusChanged(QStringLiteral("Ready"));
 }
 
 void VibeCutAgent::resetStreamState()
@@ -241,7 +267,8 @@ void VibeCutAgent::finishTurn()
         // assistant turn (it isn't valid history to replay anyway), and give
         // it one clean retry before giving up honestly.
         m_retriedEmptyTurn = true;
-        qWarning().noquote() << QStringLiteral("[VibeCut] empty end_turn with no tool calls this exchange — retrying once");
+        qWarning().noquote() << QStringLiteral("[VibeCut] empty end_turn with no tool calls this exchange — retrying once (%1)")
+                                     .arg(historyDiagnostic());
         Q_EMIT statusChanged(QStringLiteral("Retrying (no response)…"));
         startRequest();
         return;
@@ -299,17 +326,19 @@ void VibeCutAgent::finishTurn()
     // would repeat the exact bug this code used to have.
     if (m_stopReason != QLatin1String("end_turn") && !m_stopReason.isEmpty()) {
         qWarning().noquote() << QStringLiteral("[VibeCut] turn ended with stop_reason=%1 (not end_turn), "
-                                                "text=%2 blocks=%3")
+                                                "text=%2 blocks=%3 (%4)")
                                      .arg(m_stopReason, finalText.isEmpty() ? QStringLiteral("<empty>") : finalText,
-                                          QString::fromUtf8(compact(QJsonObject{{QStringLiteral("blocks"), m_blocks}})));
+                                          QString::fromUtf8(compact(QJsonObject{{QStringLiteral("blocks"), m_blocks}})),
+                                          historyDiagnostic());
         fail(QStringLiteral("Turn ended unexpectedly (%1) instead of finishing normally.").arg(m_stopReason));
         return;
     }
     if (finalText.isEmpty()) {
         qWarning().noquote() << QStringLiteral("[VibeCut] turn ended with empty text on end_turn (tool called this "
-                                                "exchange: %1); blocks=%2")
+                                                "exchange: %1); blocks=%2 (%3)")
                                      .arg(m_anyToolCalledThisExchange ? QStringLiteral("yes") : QStringLiteral("no"),
-                                          QString::fromUtf8(compact(QJsonObject{{QStringLiteral("blocks"), m_blocks}})));
+                                          QString::fromUtf8(compact(QJsonObject{{QStringLiteral("blocks"), m_blocks}})),
+                                          historyDiagnostic());
         if (!m_anyToolCalledThisExchange) {
             // No tool ever ran, and even the retry came back with nothing.
             // This is a genuine dead end, not a success - never call this

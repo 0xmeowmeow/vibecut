@@ -67,6 +67,7 @@ VibeCutDock::VibeCutDock(QWidget *parent)
     , m_transcript(new QTextBrowser(this))
     , m_status(new QLabel(this))
     , m_progress(new QProgressBar(this))
+    , m_newChat(new QPushButton(i18n("New Chat"), this))
     , m_input(new QLineEdit(this))
     , m_send(new QPushButton(i18n("Send"), this))
     , m_tools(new VibeCutTools(this))
@@ -85,9 +86,14 @@ VibeCutDock::VibeCutDock(QWidget *parent)
     m_progress->setMaximumHeight(4);
     m_progress->setVisible(false);
 
+    m_newChat->setToolTip(i18n("Start a fresh conversation - the panel keeps all history for as long as it's "
+                               "open, with no automatic limit."));
+    m_newChat->setFlat(true);
+
     auto *statusRow = new QHBoxLayout;
     statusRow->addWidget(m_status, 1);
     statusRow->addWidget(m_progress, 1);
+    statusRow->addWidget(m_newChat);
 
     auto *inputRow = new QHBoxLayout;
     inputRow->addWidget(m_input, 1);
@@ -99,6 +105,7 @@ VibeCutDock::VibeCutDock(QWidget *parent)
     layout->addLayout(inputRow);
 
     connect(m_send, &QPushButton::clicked, this, &VibeCutDock::submit);
+    connect(m_newChat, &QPushButton::clicked, this, &VibeCutDock::newChat);
     connect(m_input, &QLineEdit::returnPressed, this, &VibeCutDock::submit);
     connect(m_transcript, &QTextBrowser::anchorClicked, this, &VibeCutDock::onSuggestionClicked);
 
@@ -240,6 +247,17 @@ void VibeCutDock::submit()
     m_input->clear();
     cancelPendingSelection();
     sendPrompt(text);
+}
+
+void VibeCutDock::newChat()
+{
+    cancelPendingSelection();
+    m_agent->resetConversation();
+    m_streamStarted = false;
+    m_transcript->clear();
+    if (m_agent->hasApiKey()) {
+        appendWelcome();
+    }
 }
 
 void VibeCutDock::runNoiseSuggestion()

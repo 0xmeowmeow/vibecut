@@ -39,6 +39,7 @@ public:
 private Q_SLOTS:
     void submit();
     void onSuggestionClicked(const QUrl &url);
+    void newChat();
 
 private:
     void appendWelcome();
@@ -57,6 +58,7 @@ private:
     QTextBrowser *m_transcript;
     QLabel *m_status;
     QProgressBar *m_progress;
+    QPushButton *m_newChat;
     QLineEdit *m_input;
     QPushButton *m_send;
 
