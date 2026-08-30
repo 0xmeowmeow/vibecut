@@ -54,6 +54,11 @@ Q_SIGNALS:
     /** A tool call finished with {"ok": false, ...} — surfaced immediately so
      *  a failure is never silently swallowed by an empty final reply. */
     void toolFailed(const QString &name, const QString &errorMessage);
+    /** A tool call finished, ok or not, with its full result. Lets the dock
+     *  show what a read-only tool actually found even if the model never
+     *  narrates it — the panel should never depend on the model choosing to
+     *  report ground truth it already has. */
+    void toolCompleted(const QString &name, const QString &resultJson);
     /** The model called ask_user. */
     void userQuestionRaised(const QString &question);
     /** Progress from a long-running background operation (speech setup,

@@ -34,7 +34,10 @@ const QString kSystemPrompt = QStringLiteral(
     "concretely what was added (or that it was already there), not just 'done'. For speech-to-text: call "
     "speech_status first; if not ready, call speech_setup yourself (it uses Kdenlive's own installer and "
     "runs in the background — tell the user a one-time confirmation dialog may appear) rather than telling "
-    "the user to open Settings. Keep replies short.");
+    "the user to open Settings. A compound request (e.g. denoise AND subtitles) means do every part before "
+    "stopping, not just the first. Never end a turn silently: if a tool result makes the next step "
+    "ambiguous, call ask_user with the specific options instead of giving up with no text and no action. "
+    "Keep replies short.");
 
 QByteArray compact(const QJsonObject &obj)
 {
@@ -265,6 +268,7 @@ void VibeCutAgent::finishTurn()
             Q_EMIT toolInvoked(name, QString::fromUtf8(compact(input)));
 
             const QJsonObject result = m_tools->invoke(name, input);
+            Q_EMIT toolCompleted(name, QString::fromUtf8(compact(result)));
             if (!result.value(QStringLiteral("ok")).toBool()) {
                 Q_EMIT toolFailed(name, result.value(QStringLiteral("error")).toString(QStringLiteral("unknown error")));
             }

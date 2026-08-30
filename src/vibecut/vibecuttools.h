@@ -10,6 +10,7 @@
 #include <QObject>
 #include <QString>
 
+#include <functional>
 #include <memory>
 
 class SpeechToTextWhisper;
@@ -76,6 +77,16 @@ private:
     void continueSpeechSetup(const QString &model);
     bool ensureSubtitleTrack(const std::shared_ptr<TimelineItemModel> &model);
     QString exportZoneAudio(const std::shared_ptr<TimelineItemModel> &model, int zoneIn, int zoneOut, QString &error);
+
+    /** Resolve which clip a tool should act on when the caller didn't name
+     *  one: an explicit clip_id in @p input always wins; otherwise the
+     *  current selection; otherwise, if exactly one clip satisfies
+     *  @p isEligible (pass {} to accept any clip), that clip. Multiple
+     *  eligible clips with nothing selected is real ambiguity, not
+     *  something to guess at - returns -1 with @p error listing the
+     *  candidates so the model can ask a specific question. */
+    int resolveTargetClip(const std::shared_ptr<TimelineItemModel> &model, const QJsonObject &input,
+                          const std::function<bool(int)> &isEligible, QString &error);
 
     SpeechToTextWhisper *m_whisper = nullptr;
     QString m_pendingModel;      // non-empty while waiting for deps before downloading a model

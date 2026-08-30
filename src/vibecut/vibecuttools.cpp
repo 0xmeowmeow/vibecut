@@ -97,6 +97,51 @@ int VibeCutTools::selectedClipId() const
     return (cid != -1 && model->isClip(cid)) ? cid : -1;
 }
 
+int VibeCutTools::resolveTargetClip(const std::shared_ptr<TimelineItemModel> &model, const QJsonObject &input,
+                                    const std::function<bool(int)> &isEligible, QString &error)
+{
+    if (input.contains(QStringLiteral("clip_id"))) {
+        const int cid = input.value(QStringLiteral("clip_id")).toInt(-1);
+        if (!model->isClip(cid)) {
+            error = QStringLiteral("Clip id %1 does not exist on the timeline.").arg(cid);
+            return -1;
+        }
+        return cid; // an explicit id is honored even if a later type check rejects it - that gives a clearer error
+    }
+
+    TimelineController *controller = currentController();
+    const int selected = controller ? controller->getMainSelectedClip() : -1;
+    if (selected != -1 && model->isClip(selected) && (!isEligible || isEligible(selected))) {
+        return selected;
+    }
+
+    QList<int> candidates;
+    for (int tid : model->getAllTracksIds()) {
+        for (int cid : model->getItemsInRange(tid, 0, -1, false)) {
+            if (model->isClip(cid) && (!isEligible || isEligible(cid))) {
+                candidates.append(cid);
+            }
+        }
+    }
+    if (candidates.size() == 1) {
+        // The common single-clip project: no need to force a selection.
+        return candidates.first();
+    }
+    if (candidates.isEmpty()) {
+        error = QStringLiteral("There are no eligible clips on the timeline.");
+    } else {
+        QStringList names;
+        for (int cid : candidates) {
+            names << QStringLiteral("%1 (%2)").arg(model->getClipName(cid)).arg(cid);
+        }
+        error = QStringLiteral("Nothing is selected and there are %1 candidate clips (%2) — ask the user which "
+                               "one, or call timeline_list_clips for exact ids.")
+                    .arg(candidates.size())
+                    .arg(names.join(QStringLiteral(", ")));
+    }
+    return -1;
+}
+
 QJsonArray VibeCutTools::schemas() const
 {
     const QJsonObject noArgs{{QStringLiteral("type"), QStringLiteral("object")},
@@ -283,17 +328,18 @@ QJsonObject VibeCutTools::toolApplyEffect(const QJsonObject &input)
         return err(QStringLiteral("Effect '%1' is not on the allowlist.").arg(key));
     }
 
-    int clipId = -1;
-    if (input.contains(QStringLiteral("clip_id"))) {
-        clipId = input.value(QStringLiteral("clip_id")).toInt(-1);
-    } else {
-        clipId = controller->getMainSelectedClip();
-        if (clipId == -1) {
-            return err(QStringLiteral("No clip_id given and nothing is selected."));
-        }
+    // effect_apply is currently audio-only, and an AV-split video-only twin
+    // can never host an audio effect - exclude it up front instead of
+    // attempting and failing on it (which is what used to happen: applying
+    // to "both" clips of a split pair, one guaranteed to fail).
+    auto hasAudio = [&model](int cid) { return model->getClipState(cid).first != PlaylistState::VideoOnly; };
+    QString resolveError;
+    const int clipId = resolveTargetClip(model, input, hasAudio, resolveError);
+    if (clipId == -1) {
+        return err(resolveError);
     }
-    if (!model->isClip(clipId)) {
-        return err(QStringLiteral("Clip id %1 does not exist on the timeline.").arg(clipId));
+    if (!hasAudio(clipId)) {
+        return err(QStringLiteral("Clip %1 is video-only and can't host an audio effect.").arg(clipId));
     }
 
     std::shared_ptr<EffectStackModel> stack = model->getClipEffectStack(clipId);

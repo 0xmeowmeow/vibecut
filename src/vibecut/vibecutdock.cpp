@@ -136,6 +136,14 @@ VibeCutDock::VibeCutDock(QWidget *parent)
     connect(m_agent, &VibeCutAgent::toolFailed, this, [this](const QString &name, const QString &error) {
         appendLine(i18n("⚠ %1 failed: %2", name, error), QStringLiteral("#c33"));
     });
+    connect(m_agent, &VibeCutAgent::toolCompleted, this, [this](const QString &name, const QString &resultJson) {
+        // Ground truth for read-only tools, shown regardless of whether the
+        // model bothers to narrate it - see DESIGN_SPECS.md §3.
+        const QString summary = describeToolResult(name, resultJson);
+        if (!summary.isEmpty()) {
+            appendLine(summary, QStringLiteral("#888"));
+        }
+    });
     connect(m_agent, &VibeCutAgent::userQuestionRaised, this, [this](const QString &q) {
         appendLine(QStringLiteral("VibeCut asks: %1").arg(q), QStringLiteral("#c80"));
     });
@@ -291,6 +299,27 @@ QString VibeCutDock::describeTool(const QString &name, const QString &argsJson) 
         return i18n("Adding \"%1\"…", friendlyNames.value(key, key));
     }
     return i18n("Running %1…", name);
+}
+
+QString VibeCutDock::describeToolResult(const QString &name, const QString &resultJson) const
+{
+    const QJsonObject result = QJsonDocument::fromJson(resultJson.toUtf8()).object();
+    if (!result.value(QStringLiteral("ok")).toBool()) {
+        return QString(); // toolFailed already shows the failure line
+    }
+    if (name == QLatin1String("timeline_get_selection")) {
+        const int cid = result.value(QStringLiteral("selected_clip_id")).toInt(-1);
+        return cid == -1 ? i18n("→ Nothing is selected on the timeline.") : i18n("→ Clip %1 is selected.", cid);
+    }
+    if (name == QLatin1String("timeline_list_clips")) {
+        return i18n("→ %1 clip(s) on the timeline.", result.value(QStringLiteral("clips")).toArray().size());
+    }
+    if (name == QLatin1String("speech_status")) {
+        const bool ready = result.value(QStringLiteral("dependencies_installed")).toBool();
+        const int models = result.value(QStringLiteral("models_installed")).toArray().size();
+        return ready ? i18n("→ Whisper is ready (%1 model(s) installed).", models) : i18n("→ Whisper is not set up yet.");
+    }
+    return QString();
 }
 
 void VibeCutDock::appendLine(const QString &text, const QString &cssColor)

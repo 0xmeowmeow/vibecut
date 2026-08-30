@@ -48,6 +48,7 @@ private:
     void appendLine(const QString &text, const QString &cssColor = QString());
     void cancelPendingSelection();
     QString describeTool(const QString &name, const QString &argsJson) const;
+    QString describeToolResult(const QString &name, const QString &resultJson) const;
 
     QTextBrowser *m_transcript;
     QLabel *m_status;
