@@ -428,6 +428,7 @@ void VibeCutTools::continueSpeechSetup(const QString &model)
 QJsonObject VibeCutTools::toolSpeechStatus()
 {
     SpeechToTextWhisper *w = whisperEngine();
+    w->checkVenv(false, false); // refresh the cached status (starts Unknown until probed) rather than report stale state
     QJsonArray models;
     for (const QString &m : w->getInstalledModels()) {
         models.append(m);
@@ -456,12 +457,35 @@ QJsonObject VibeCutTools::toolSpeechSetup(const QJsonObject &input)
     }
 
     m_pendingModel = model;
-    if (w->status() == AbstractPythonInterface::Installed) {
+
+    // Refresh the cached status before branching - it starts Unknown until
+    // something actually probes the venv, and installMissingDependencies()
+    // alone can never create a venv from scratch (it calls a private helper
+    // whose forceInstall defaults to false, so on a fresh system it silently
+    // does nothing - no venv, no signal, no error). Mirror the exact switch
+    // Kdenlive's own "Install" button uses
+    // (PythonDependencyMessage in abstractpythoninterface.cpp) instead of
+    // guessing at a single call.
+    w->checkVenv(false, false);
+    switch (w->status()) {
+    case AbstractPythonInterface::Installed:
         continueSpeechSetup(model);
-    } else {
+        break;
+    case AbstractPythonInterface::MissingDependencies:
         Q_EMIT backgroundProgress(QStringLiteral("Setting up Whisper via Kdenlive's own installer — a confirmation "
                                                   "dialog may appear; please click Continue."));
         w->installMissingDependencies();
+        break;
+    case AbstractPythonInterface::InProgress:
+        break; // already running; the m_pendingModel guard above covers repeat clicks
+    case AbstractPythonInterface::Unknown:
+    case AbstractPythonInterface::NotInstalled:
+    case AbstractPythonInterface::Broken:
+    default:
+        Q_EMIT backgroundProgress(QStringLiteral("Creating a Python environment for Whisper via Kdenlive's own "
+                                                  "installer — a confirmation dialog may appear; please click Continue."));
+        w->checkVenv(false, true); // creates the venv, then chains into installMissingDependencies() itself
+        break;
     }
     return QJsonObject{
         {QStringLiteral("ok"), true},
