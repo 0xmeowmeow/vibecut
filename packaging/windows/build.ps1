@@ -238,13 +238,37 @@ try {
             }
         }
 
-        $installerDirectory = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
-        $craftInstaller = Join-Path $installerDirectory "vibecut-install-craft-$CraftCommit.ps1"
-        $installerUrl = "https://raw.githubusercontent.com/KDE/craft/$CraftCommit/setup/install_craft.ps1"
-        Invoke-WebRequest -Uri $installerUrl -OutFile $craftInstaller
+        if (-not (Test-Path -LiteralPath $CraftRoot -PathType Container)) {
+            New-Item -ItemType Directory -Path $CraftRoot | Out-Null
+        }
+        if ($DownloadDirectory) {
+            New-Item -ItemType Directory -Path $DownloadDirectory -Force | Out-Null
+            $bootstrapDownloadDirectory = Join-Path $CraftRoot 'download'
+            if (-not $DownloadDirectory.Equals(
+                    [System.IO.Path]::GetFullPath($bootstrapDownloadDirectory),
+                    [System.StringComparison]::OrdinalIgnoreCase)) {
+                New-Item -ItemType Junction -Path $bootstrapDownloadDirectory -Target $DownloadDirectory | Out-Null
+            }
+        }
 
-        & $craftInstaller -root $CraftRoot -python $PythonPath -branch $CraftCommit -use-defaults
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $craftScript -PathType Leaf)) {
+        $bootstrapDirectory = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+        $craftBootstrap = Join-Path $bootstrapDirectory "vibecut-craft-bootstrap-$CraftCommit.py"
+        $bootstrapUrl = "https://raw.githubusercontent.com/KDE/craft/$CraftCommit/setup/CraftBootstrap.py"
+        Invoke-WebRequest -Uri $bootstrapUrl -OutFile $craftBootstrap
+
+        # Craft's MSVC bootstrap builds gettext from source on a cold machine. Its
+        # generated gettextlib link omits libiconv unless LIBS supplies it.
+        $savedBootstrapLibs = $env:LIBS
+        $bootstrapExitCode = 1
+        try {
+            $env:LIBS = if ($savedBootstrapLibs) { "$savedBootstrapLibs -liconv" } else { '-liconv' }
+            & $PythonPath $craftBootstrap '--prefix' $CraftRoot '--branch' $CraftCommit '--use-defaults'
+            $bootstrapExitCode = $LASTEXITCODE
+        }
+        finally {
+            $env:LIBS = $savedBootstrapLibs
+        }
+        if ($bootstrapExitCode -ne 0 -or -not (Test-Path -LiteralPath $craftScript -PathType Leaf)) {
             throw 'KDE Craft bootstrap failed.'
         }
     }
