@@ -6,6 +6,7 @@
 [CmdletBinding()]
 param(
     [string]$CraftRoot = 'C:\CraftVibeCut',
+    [string]$DownloadDirectory = '',
     [string]$PythonPath = '',
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '..\..\artifacts\windows'),
     [switch]$BuildOnly
@@ -182,6 +183,7 @@ function Test-PackagedBuild {
 
 $sourceRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $CraftRoot = [System.IO.Path]::GetFullPath($CraftRoot)
+$DownloadDirectory = if ($DownloadDirectory) { [System.IO.Path]::GetFullPath($DownloadDirectory) } else { '' }
 $OutputDirectory = [System.IO.Path]::GetFullPath($OutputDirectory)
 $PythonPath = Resolve-Python $PythonPath
 
@@ -230,19 +232,16 @@ try {
 
     if (-not (Test-Path -LiteralPath $craftScript -PathType Leaf)) {
         if (Test-Path -LiteralPath $CraftRoot) {
-            $unexpectedEntries = @(Get-ChildItem -LiteralPath $CraftRoot -Force | Where-Object { $_.Name -ne 'download' })
+            $unexpectedEntries = @(Get-ChildItem -LiteralPath $CraftRoot -Force)
             if ($unexpectedEntries.Count -gt 0) {
                 throw "$CraftRoot is not an empty Craft root. Choose a new -CraftRoot instead of mixing build environments."
             }
         }
 
-        $downloadDirectory = Join-Path $CraftRoot 'download'
-        New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
-        $craftInstaller = Join-Path $downloadDirectory "install-craft-$CraftCommit.ps1"
-        if (-not (Test-Path -LiteralPath $craftInstaller -PathType Leaf)) {
-            $installerUrl = "https://raw.githubusercontent.com/KDE/craft/$CraftCommit/setup/install_craft.ps1"
-            Invoke-WebRequest -Uri $installerUrl -OutFile $craftInstaller
-        }
+        $installerDirectory = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
+        $craftInstaller = Join-Path $installerDirectory "vibecut-install-craft-$CraftCommit.ps1"
+        $installerUrl = "https://raw.githubusercontent.com/KDE/craft/$CraftCommit/setup/install_craft.ps1"
+        Invoke-WebRequest -Uri $installerUrl -OutFile $craftInstaller
 
         & $craftInstaller -root $CraftRoot -python $PythonPath -branch $CraftCommit -use-defaults
         if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $craftScript -PathType Leaf)) {
@@ -256,6 +255,10 @@ try {
     }
 
     $craftSettings = Join-Path $CraftRoot 'etc\CraftSettings.ini'
+    if ($DownloadDirectory) {
+        New-Item -ItemType Directory -Path $DownloadDirectory -Force | Out-Null
+        Set-IniValue $craftSettings 'Paths' 'DownloadDir' $DownloadDirectory
+    }
     Set-IniValue $craftSettings 'BlueprintVersions' 'EnableDailyUpdates' 'False'
     Set-IniValue $craftSettings 'Packager' 'PackageType' 'NullsoftInstallerPackager'
     Set-IniValue $craftSettings 'Packager' 'PackageDebugSymbols' 'False'

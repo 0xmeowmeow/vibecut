@@ -31,7 +31,7 @@ To compile and install into the Craft root without creating packages:
 .\packaging\windows\build.ps1 -BuildOnly
 ```
 
-Use `-CraftRoot` to select another dedicated environment, `-PythonPath` to select a specific Python 3.11 executable, and `-OutputDirectory` to place packages elsewhere. Do not share the Craft root with another project.
+Use `-CraftRoot` to select another dedicated environment, `-DownloadDirectory` to keep a reusable download cache outside that environment, `-PythonPath` to select a specific Python 3.11 executable, and `-OutputDirectory` to place packages elsewhere. Do not share the Craft root with another project.
 
 The package validation checks SHA-256 sidecars, tests the NSIS payload, extracts the portable archive, runs MLT and FFmpeg, and asks the packaged VibeCut executable to produce its component setup report.
 

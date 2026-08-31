@@ -34,7 +34,7 @@ jobs:
       - name: Restore KDE Craft downloads
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          path: C:\CraftVibeCut\download
+          path: C:\CraftVibeCutDownloads
           key: craft-download-windows-msvc2022-b80e8f8-96127a2-${{ hashFiles('packaging/windows/build.ps1', '.craft.ini') }}
           restore-keys: |
             craft-download-windows-msvc2022-b80e8f8-96127a2-
@@ -45,6 +45,7 @@ jobs:
           $python = Join-Path $env:pythonLocation 'python.exe'
           ./packaging/windows/build.ps1 `
             -CraftRoot 'C:\CraftVibeCut' `
+            -DownloadDirectory 'C:\CraftVibeCutDownloads' `
             -PythonPath $python `
             -OutputDirectory (Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows')
 
