@@ -42,7 +42,7 @@ jobs:
       - name: Build, package, and smoke-test VibeCut
         shell: pwsh
         run: |
-          $python = (Get-Command python.exe -CommandType Application).Source
+          $python = Join-Path $env:pythonLocation 'python.exe'
           ./packaging/windows/build.ps1 `
             -CraftRoot 'C:\CraftVibeCut' `
             -PythonPath $python `
