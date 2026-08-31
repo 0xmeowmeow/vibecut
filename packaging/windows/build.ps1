@@ -227,10 +227,10 @@ try {
 
     $craftDirectory = Join-Path $CraftRoot 'craft'
     $craftScript = Join-Path $craftDirectory 'bin\craft.py'
-    $env:CraftRoot = $craftDirectory
     $env:CRAFT_PYTHON = $PythonPath
 
     if (-not (Test-Path -LiteralPath $craftScript -PathType Leaf)) {
+        $env:CraftRoot = $null
         if (Test-Path -LiteralPath $CraftRoot) {
             $unexpectedEntries = @(Get-ChildItem -LiteralPath $CraftRoot -Force)
             if ($unexpectedEntries.Count -gt 0) {
@@ -248,6 +248,7 @@ try {
             throw 'KDE Craft bootstrap failed.'
         }
     }
+    $env:CraftRoot = $craftDirectory
 
     $installedCraftCommit = (& $gitCommand.Source -C $craftDirectory rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $installedCraftCommit -ne $CraftCommit) {
