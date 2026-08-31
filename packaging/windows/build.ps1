@@ -252,22 +252,26 @@ try {
         }
 
         $bootstrapDirectory = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
-        $craftBootstrap = Join-Path $bootstrapDirectory "vibecut-craft-bootstrap-$CraftCommit.py"
-        $bootstrapUrl = "https://raw.githubusercontent.com/KDE/craft/$CraftCommit/setup/CraftBootstrap.py"
-        Invoke-WebRequest -Uri $bootstrapUrl -OutFile $craftBootstrap
+        $craftSourceDirectory = Join-Path $bootstrapDirectory "vibecut-craft-source-$CraftCommit"
+        if (Test-Path -LiteralPath $craftSourceDirectory) {
+            throw "Temporary Craft source path already exists: $craftSourceDirectory"
+        }
+        New-Item -ItemType Directory -Path $craftSourceDirectory | Out-Null
+        Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'init'
+        Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'remote' 'add' 'origin' 'https://invent.kde.org/packaging/craft.git'
+        Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'fetch' '--depth=1' 'origin' $CraftCommit
+        Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'checkout' '--detach' 'FETCH_HEAD'
 
-        # Craft's MSVC bootstrap builds gettext from source on a cold machine. Its
-        # generated gettextlib link omits libiconv unless LIBS supplies it.
-        $savedBootstrapLibs = $env:LIBS
+        # A cold MSVC bootstrap builds gettext from source. Patch only that recipe
+        # so its generated gettextlib link includes the already-built libiconv.
+        $craftBootstrapPatch = Join-Path $PSScriptRoot 'craft-gettext-msvc-iconv.patch'
+        Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'apply' '--check' $craftBootstrapPatch
+        Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'apply' $craftBootstrapPatch
+
+        $craftBootstrap = Join-Path $craftSourceDirectory 'setup\CraftBootstrap.py'
         $bootstrapExitCode = 1
-        try {
-            $env:LIBS = if ($savedBootstrapLibs) { "$savedBootstrapLibs -liconv" } else { '-liconv' }
-            & $PythonPath $craftBootstrap '--prefix' $CraftRoot '--branch' $CraftCommit '--use-defaults'
-            $bootstrapExitCode = $LASTEXITCODE
-        }
-        finally {
-            $env:LIBS = $savedBootstrapLibs
-        }
+        & $PythonPath $craftBootstrap '--prefix' $CraftRoot '--branch' $CraftCommit '--localDev' $craftSourceDirectory '--use-defaults'
+        $bootstrapExitCode = $LASTEXITCODE
         if ($bootstrapExitCode -ne 0 -or -not (Test-Path -LiteralPath $craftScript -PathType Leaf)) {
             throw 'KDE Craft bootstrap failed.'
         }
