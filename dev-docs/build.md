@@ -221,6 +221,8 @@ kdenlive
 
 [Craft](https://community.kde.org/Craft) is a convenient tool for building and packaging Kdenlive and its third-party dependencies across Linux, Windows and macOS.
 
+For this VibeCut fork, use the pinned [reproducible Windows build](windows-build.md). It is the same MSVC 2022 build and package entry point used by GitHub Actions.
+
 It is well suited for quickly setting up a working build environment or creating distributable packages. However, manual builds are generally preferred for active development workflows, debugging and dependency customization.
 
 1. Set up Craft as described [here](https://community.kde.org/Craft#Setting_up_Craft). (On Windows choose MinGW as compiler!)

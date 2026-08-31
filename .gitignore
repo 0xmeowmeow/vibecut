@@ -30,3 +30,4 @@ kde-ci-reports/*
 /install.log
 /kdenlive-run.log
 /.vibecut-scratch/
+/artifacts/
