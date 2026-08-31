@@ -8,7 +8,9 @@ tool or touching the agent loop. `KDENLIVE_INTERNALS.md` is reference
 notes on the specific upstream Kdenlive subsystems already reverse
 engineered (effects, subtitles, audio export, the Python plugin install
 state machine) — check it before re-deriving one from scratch, and add
-to it when a new subsystem gets touched.
+to it when a new subsystem gets touched. `TODO.md` is the living,
+checkable roadmap — check items off there instead of letting pending
+work only live in this file's prose.
 
 ## What this project is
 
