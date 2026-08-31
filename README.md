@@ -1,3 +1,13 @@
+![](data/pics/vibecut-screenshot.png)
+
+# vibecut
+
+vibecut is an AI-scriptable fork of [Kdenlive](https://kdenlive.org) — a chat panel that can drive and extend the editor live, from natural language, instead of just triggering pre-built features through menus. Ask it to remove background noise, generate subtitles, or apply an effect, and it does it directly on your live project — the screenshot above is a real run: chat-driven AI noise removal (DeepFilterNet) and a full-project GPU-Whisper subtitle transcription, both landed on the timeline by asking for them. Video editing's answer to [vibecad](https://github.com/10-X-eng/vibecad).
+
+Everything below this point is Kdenlive's own upstream documentation, unmodified.
+
+---
+
 ![](data/pics/kdenlive-logo.png)
 
 # Kdenlive
