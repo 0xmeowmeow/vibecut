@@ -389,3 +389,35 @@ actually loading it onto `cuda:0`. Recorded the corrected contract (and
 why `<model>.pt` is the wrong thing to check for — several aliases share
 one file) in `KDENLIVE_INTERNALS.md` so it doesn't have to be
 re-derived.
+
+## 2026-08-31 — "still going" was CPU, not stuck
+
+First real subtitle-generation run after the rewrite came back with "it
+says it's still going?" Chased it through real process state rather than
+guessing: no live python3 under kdenlive, no crash in `coredumpctl`, but
+a leaked ~858MB exported `.wav` sitting in the sandbox's `cache/tmp/` —
+and a second one from an earlier run, never cleaned up either. Two real
+bugs, both found by reading the actual scripts and settings rather than
+trusting the prior call:
+
+1. `generate_subtitles` forwarded `KdenliveSettings::whisperDevice()`,
+   which looked like the right setting but defaults to the literal
+   string `"cpu"` in `kdenlivesettings.kcfg` — and nothing in vibecut's
+   own flow ever offers a way to change it, since the Speech preferences
+   page isn't part of this flow anymore. Every transcription was quietly
+   running on CPU against a fully verified working CUDA venv. On a
+   whole-timeline export (no `clip_id` given) that's tens of minutes of
+   audio — slow enough to look indistinguishable from stuck. Fixed by
+   ignoring that setting for this call and probing the venv's own
+   `torch.cuda.is_available()` directly each time.
+2. `QProcess::finished()` never fires if `start()` itself fails — only
+   `errorOccurred()` does. The subtitle job had no handler for that, so
+   a launch failure would wedge `m_subtitleJobRunning` true forever with
+   no failure ever surfaced and the exported audio never cleaned up —
+   exactly the state the leaked wav files were evidence of. Added an
+   `errorOccurred` handler and routed both failure paths through one
+   `finish()` lambda that always clears the flag and removes the temp
+   file.
+
+Recorded the device trap in `KDENLIVE_INTERNALS.md` next to the existing
+Whisper script notes.

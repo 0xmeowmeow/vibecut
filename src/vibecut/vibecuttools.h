@@ -88,6 +88,14 @@ private:
     static QString whisperRequirementsFile();
     static QString whisperModelCacheDir();
     bool vibecutDepsReady() const;
+    /** Whether the venv's torch actually sees a CUDA device. Queried fresh
+     *  each call (not cached) since it's cheap and this is the only thing
+     *  standing between transcription silently running on CPU and running on
+     *  the GPU it was verified to have - see the "device=cpu" bug in
+     *  KDENLIVE_INTERNALS.md: KdenliveSettings::whisperDevice() defaults to
+     *  the literal string "cpu" and our flow never offers a way to change
+     *  it, so it must not be trusted here. */
+    bool vibecutCudaAvailable() const;
     /** Model alias (e.g. "turbo") -> its real download URL, straight from
      *  whisperquery.py's own `task=list` (which reads openai-whisper's
      *  `_MODELS` table) rather than guessing at a `<model>.pt` filename

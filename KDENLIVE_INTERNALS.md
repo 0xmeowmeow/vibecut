@@ -175,6 +175,29 @@ which turned out wrong):
 - Standard OpenAI Whisper model names apply (`tiny`, `base`, `small`,
   `medium`, `turbo`, `large-v3`, ...); `turbo` is Kdenlive's own UI
   default and vibecut's too.
+- **`device=` trap**: `whispertotext.run_whisper()`'s own default is
+  `device="cpu"`, and the bypass code originally forwarded
+  `KdenliveSettings::whisperDevice()` when calling `whispertosrt.py` —
+  looked reasonable, since that's the setting Kdenlive's own Speech
+  preferences page writes. Its `<entry>` in `kdenlivesettings.kcfg` has
+  `<default>cpu</default>` though, and nothing in vibecut's chat flow
+  ever opens that preferences page to change it — so every transcription
+  silently ran on CPU regardless of a fully verified working CUDA venv,
+  on whatever length of audio `generate_subtitles` exported (the whole
+  timeline, if no `clip_id` was given — easily tens of minutes, an
+  800MB+ WAV). It "worked", just at CPU speed, which reads indistinguishable
+  from stuck. Found by checking real process state (no live python3
+  under the running kdenlive, no crash in `coredumpctl`, but a leaked
+  multi-hundred-MB export `.wav` still sitting in the sandbox's
+  `cache/tmp/` from more than one prior run — `finished()` also never
+  fires on a `QProcess::start()` failure, so a stuck job never resets
+  `m_subtitleJobRunning` or cleans up its export either, which was the
+  first candidate ruled out here). Fixed by ignoring
+  `KdenliveSettings::whisperDevice()` for this call entirely and probing
+  the vibecut venv's own `torch.cuda.is_available()` fresh each time
+  instead — same shape of lesson as `installMissingDependencies()`:
+  don't trust a Kdenlive-owned setting that vibecut's own flow has no path
+  to actually set.
 
 The now-historical `speech_system_python` bypass setting, for reference:
 Kdenlive supports pointing `AbstractPythonInterface` at a Python

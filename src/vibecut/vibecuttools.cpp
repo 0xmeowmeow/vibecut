@@ -437,6 +437,17 @@ bool VibeCutTools::vibecutDepsReady() const
     return check.exitStatus() == QProcess::NormalExit && check.exitCode() == 0;
 }
 
+bool VibeCutTools::vibecutCudaAvailable() const
+{
+    QProcess check;
+    check.start(vibecutVenvPython(), {QStringLiteral("-c"), QStringLiteral("import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)")});
+    if (!check.waitForStarted(3000)) {
+        return false;
+    }
+    check.waitForFinished(15000);
+    return check.exitStatus() == QProcess::NormalExit && check.exitCode() == 0;
+}
+
 QMap<QString, QString> VibeCutTools::whisperModelUrls() const
 {
     QMap<QString, QString> result;
@@ -808,11 +819,16 @@ QJsonObject VibeCutTools::toolGenerateSubtitles(const QJsonObject &input)
     }
 
     const QString srtPath = QDir::temp().absoluteFilePath(QFileInfo(audioPath).completeBaseName() + QStringLiteral(".srt"));
+    // Don't trust KdenliveSettings::whisperDevice(): it's a leftover from the
+    // installer flow we bypassed, its kcfg default is literally "cpu", and
+    // nothing in this chat panel ever offers a way to change it - passing it
+    // through silently forced every transcription onto the CPU regardless of
+    // the CUDA already verified working in the vibecut-owned venv. Probe the
+    // real venv instead so the fast path is actually the one used.
+    const bool cuda = vibecutCudaAvailable();
     QStringList arguments = {script, audioPath, useModel,
-                             QStringLiteral("ffmpeg_path=%1").arg(KdenliveSettings::ffmpegpath())};
-    if (!KdenliveSettings::whisperDevice().isEmpty()) {
-        arguments << QStringLiteral("device=%1").arg(KdenliveSettings::whisperDevice());
-    }
+                             QStringLiteral("ffmpeg_path=%1").arg(KdenliveSettings::ffmpegpath()),
+                             QStringLiteral("device=%1").arg(cuda ? QStringLiteral("cuda") : QStringLiteral("cpu"))};
     if (KdenliveSettings::whisperDisableFP16()) {
         arguments << QStringLiteral("fp16=False");
     }
@@ -820,36 +836,65 @@ QJsonObject VibeCutTools::toolGenerateSubtitles(const QJsonObject &input)
     auto *proc = new QProcess(this);
     proc->setProcessChannelMode(QProcess::MergedChannels);
     m_subtitleJobRunning = true;
-    Q_EMIT backgroundProgress(QStringLiteral("Transcribing with Whisper (%1)… this can take a while for long audio.").arg(useModel));
+    Q_EMIT backgroundProgress(QStringLiteral("Transcribing with Whisper (%1, %2)… this can take a while for long audio.")
+                                  .arg(useModel, cuda ? QStringLiteral("GPU") : QStringLiteral("CPU - no CUDA device found, this will be slow")));
+
+    // finished() alone isn't enough: if start() fails outright (bad path,
+    // not executable, ...) Qt never emits finished(), only errorOccurred().
+    // That gap is exactly what left two previous runs stuck forever -
+    // m_subtitleJobRunning wedged true with no failure ever surfaced and
+    // their multi-hundred-MB exported wav files never cleaned up (found
+    // sitting in the sandbox's tmp dir). Handle both signals and always
+    // clear the flag + the temp audio file.
+    auto finish = [this, proc, srtPath, audioPath, zoneIn](bool crashedOrFailed, const QString &failureReason) {
+        m_subtitleJobRunning = false;
+        QFile::remove(audioPath);
+        if (crashedOrFailed) {
+            Q_EMIT backgroundProgress(QStringLiteral("Subtitle generation failed: %1").arg(failureReason));
+            proc->deleteLater();
+            return;
+        }
+        if (!QFile::exists(srtPath)) {
+            const QString errOut = QString::fromUtf8(proc->readAllStandardOutput());
+            Q_EMIT backgroundProgress(QStringLiteral("Subtitle generation failed: %1")
+                                          .arg(errOut.isEmpty() ? QStringLiteral("no output produced") : errOut));
+            proc->deleteLater();
+            return;
+        }
+        std::shared_ptr<TimelineItemModel> liveModel = currentModel();
+        std::shared_ptr<SubtitleModel> subModel = liveModel ? liveModel->getSubtitleModel() : nullptr;
+        if (subModel) {
+            subModel->importSubtitle(srtPath, zoneIn, true);
+            Q_EMIT backgroundProgress(QStringLiteral("✓ Subtitles imported from the Whisper transcription."));
+        } else {
+            Q_EMIT backgroundProgress(
+                QStringLiteral("Transcription finished, but no subtitle track was found to import into."));
+        }
+        QFile::remove(srtPath);
+        proc->deleteLater();
+    };
 
     connect(proc, static_cast<void (QProcess::*)(int, QProcess::ExitStatus)>(&QProcess::finished), this,
-            [this, proc, srtPath, audioPath, zoneIn](int exitCode, QProcess::ExitStatus status) {
-                m_subtitleJobRunning = false;
-                QFile::remove(audioPath);
+            [finish, proc](int exitCode, QProcess::ExitStatus status) {
                 if (status == QProcess::CrashExit) {
-                    Q_EMIT backgroundProgress(QStringLiteral("Subtitle generation crashed."));
-                    proc->deleteLater();
+                    finish(true, QStringLiteral("the transcription process crashed"));
                     return;
                 }
-                if (exitCode != 0 || !QFile::exists(srtPath)) {
-                    const QString errOut = QString::fromUtf8(proc->readAllStandardError());
-                    Q_EMIT backgroundProgress(QStringLiteral("Subtitle generation failed: %1")
-                                                  .arg(errOut.isEmpty() ? QStringLiteral("no output produced") : errOut));
-                    proc->deleteLater();
+                if (exitCode != 0) {
+                    const QString errOut = QString::fromUtf8(proc->readAllStandardOutput());
+                    finish(true, errOut.isEmpty() ? QStringLiteral("exited with code %1").arg(exitCode) : errOut);
                     return;
                 }
-                std::shared_ptr<TimelineItemModel> liveModel = currentModel();
-                std::shared_ptr<SubtitleModel> subModel = liveModel ? liveModel->getSubtitleModel() : nullptr;
-                if (subModel) {
-                    subModel->importSubtitle(srtPath, zoneIn, true);
-                    Q_EMIT backgroundProgress(QStringLiteral("✓ Subtitles imported from the Whisper transcription."));
-                } else {
-                    Q_EMIT backgroundProgress(
-                        QStringLiteral("Transcription finished, but no subtitle track was found to import into."));
-                }
-                QFile::remove(srtPath);
-                proc->deleteLater();
+                finish(false, QString());
             });
+    connect(proc, &QProcess::errorOccurred, this, [finish](QProcess::ProcessError error) {
+        if (error == QProcess::FailedToStart) {
+            finish(true, QStringLiteral("could not launch the Whisper environment's python3 - it may be missing or broken; "
+                                        "call speech_setup again"));
+        }
+        // Other QProcess::ProcessError values (Crashed, Timedout, ReadError, WriteError, UnknownError)
+        // are followed by finished() firing on its own - let that path report it, don't double-report.
+    });
 
     proc->start(vibecutVenvPython(), arguments);
 
@@ -857,6 +902,7 @@ QJsonObject VibeCutTools::toolGenerateSubtitles(const QJsonObject &input)
         {QStringLiteral("ok"), true},
         {QStringLiteral("started"), true},
         {QStringLiteral("model"), useModel},
+        {QStringLiteral("device"), cuda ? QStringLiteral("cuda") : QStringLiteral("cpu")},
         {QStringLiteral("note"), QStringLiteral("Transcribing in the background. Progress and the final result will "
                                                 "appear in this panel on their own.")},
     };
