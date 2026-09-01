@@ -172,10 +172,10 @@ VibeCutDock::VibeCutDock(QWidget *parent)
     });
 
     if (!m_agent->hasApiKey()) {
-        appendLine(i18n("Set ANTHROPIC_API_KEY in the environment and restart to use VibeCut."), QStringLiteral("#c33"));
+        appendLine(m_agent->notReadyMessage(), QStringLiteral("#c33"));
         m_input->setEnabled(false);
         m_send->setEnabled(false);
-        m_status->setText(QStringLiteral("No API key"));
+        m_status->setText(QStringLiteral("Not ready"));
     } else {
         appendWelcome();
         m_status->setText(QStringLiteral("Ready"));
@@ -184,8 +184,9 @@ VibeCutDock::VibeCutDock(QWidget *parent)
 
 void VibeCutDock::appendWelcome()
 {
-    QString html = QStringLiteral("<b>%1</b><br>%2<br>")
-                       .arg(i18n("Hi, I'm VibeCut."), i18n("I can act on your live timeline. Try one of these, or type your own request below:"));
+    QString html = QStringLiteral("<b>%1</b><br>%2<br><span style=\"color:#888\">%3</span><br>")
+                       .arg(i18n("Hi, I'm VibeCut."), i18n("I can act on your live timeline. Try one of these, or type your own request below:"),
+                            i18n("Model: %1", m_agent->modelLabel()));
     for (const Suggestion &s : suggestions()) {
         html += QStringLiteral("• <a href=\"vibecut://%1\">%2</a><br>").arg(s.id, s.label.toHtmlEscaped());
     }

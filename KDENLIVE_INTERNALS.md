@@ -32,6 +32,26 @@ that's the payoff, not a one-time exhaustive pass.
   force a selection for the common single-clip case. Multiple eligible
   candidates with nothing selected is real ambiguity; list them so the
   question asked back is specific.
+- **`EffectsRepository` is the real effect list** (`src/effects/
+  effectsrepository.hpp`, singleton via `EffectsRepository::get()`) — the
+  same source Kdenlive's own "Add Effect" panel reads from. Found while
+  fixing `effect_apply` (2026-09-01): it used to hand-validate against a
+  two-entry hardcoded map (`denoise`/`denoise_light`) instead of this,
+  which is why it rejected anything else outright rather than a real
+  "not found." Useful methods: `exists(assetId)` (the actual validity
+  check — anything it accepts is something Kdenlive can really do),
+  `getNames()` (returns `QVector<QPair<id, displayName>>` for every
+  effect — the base for a search/discovery tool, not something to dump
+  unfiltered), `isAudioEffect(assetId)` (real type classification —
+  generalises the AV-split video/audio-clip compatibility check above to
+  any effect, not just the two that used to be allowlisted),
+  `getDescription(assetId)`. Also worth remembering: adding an effect via
+  `TimelineModel::addClipEffect()` only ever adds it with its XML-defined
+  default parameter values — for an effect like `avfilter.colorlevels` or
+  `avfilter.colorcorrect` those defaults are an identity transform, so
+  the clip visibly doesn't change even though the effect really is on the
+  stack. Confirming `hasFilter()` proves the effect landed, not that it
+  does anything yet — a separate, still-open gap (see `TODO.md`).
 
 ## LADSPA audio effects
 
