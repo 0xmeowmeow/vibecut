@@ -157,7 +157,9 @@ jobs:
               echo "Missing build checksum for ${package}." >&2
               exit 1
             fi
-            expected="$(awk 'NR == 1 { print $1 }' "${checksum}")"
+            # Craft writes checksum sidecars with Windows CRLF endings. Strip
+            # the carriage return before comparing them on this Linux runner.
+            expected="$(awk 'NR == 1 { gsub(/\r/, "", $1); print tolower($1) }' "${checksum}")"
             actual="$(sha256sum "${package}" | awk '{ print $1 }')"
             if [[ "${actual}" != "${expected}" ]]; then
               echo "Build checksum mismatch for ${package}." >&2
