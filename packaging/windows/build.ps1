@@ -462,6 +462,9 @@ try {
         '--options', "craft/craft-blueprints-kde.revision=$KdeBlueprintCommit"
     )
 
+    # Bootstrap may install the compiler runtime before the requested build type is applied.
+    # Recreate its image so the collection packager can include the MSVC redistributables.
+    Invoke-Checked $PythonPath $craftScript @commonCraftArguments '--no-cache' '--ignoreInstalled' 'libs/runtime'
     # Build gettext first so its native tool can be replaced before GLib and the
     # rest of Kdenlive's dependency graph compile their translation catalogs.
     Invoke-Checked $PythonPath $craftScript @commonCraftArguments 'libs/gettext'
