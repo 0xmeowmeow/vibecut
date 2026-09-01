@@ -8,6 +8,7 @@
 #include "bin/model/subtitlemodel.hpp"
 #include "core.h"
 #include "dialogs/subtitleedit.h"
+#include "effects/effectsrepository.hpp"
 #include "effects/effectstack/model/effectstackmodel.hpp"
 #include "kdenlivesettings.h"
 #include "mainwindow.h"
@@ -31,10 +32,18 @@
 #include <QTemporaryFile>
 
 namespace {
-// Allowlisted audio-cleanup effects. "denoise" is DeepFilterNet, a
-// deep-learning speech denoiser bundled via the Flatpak manifest
-// (deepfilternet-ladspa) — it handles non-stationary noise like a busy cafe,
-// which the RNNoise-based "denoise_light" cannot.
+// Friendly aliases for the effects people ask for by description rather than
+// MLT/Kdenlive asset id. This used to be the *entire* guard rail (effect_apply
+// rejected anything not in this map, and the tool schema's JSON-Schema `enum`
+// locked the model to exactly these keys) - per DESIGN_SPECS.md §2 ("within
+// things Kdenlive itself can already do, the tool surface should grow
+// freely"), the real guard rail is now EffectsRepository::exists() - this map
+// is just a convenience lookup for the couple of effects worth a friendly
+// name, checked first, falling through to treating the input as a literal
+// asset id otherwise. "denoise" is DeepFilterNet, a deep-learning speech
+// denoiser bundled via the Flatpak manifest (deepfilternet-ladspa) — it
+// handles non-stationary noise like a busy cafe, which the RNNoise-based
+// "denoise_light" cannot.
 QJsonObject effectAllowlist()
 {
     return QJsonObject{
@@ -82,7 +91,15 @@ VibeCutTools::VibeCutTools(QObject *parent)
 
 QString VibeCutTools::resolveEffectId(const QString &key)
 {
-    return effectAllowlist().value(key).toString();
+    const QString alias = effectAllowlist().value(key).toString();
+    if (!alias.isEmpty()) {
+        return alias;
+    }
+    // Not a friendly alias - treat it as a literal Kdenlive/MLT asset id and
+    // validate against the real repository (the same one Kdenlive's own
+    // "Add Effect" panel is populated from), rather than rejecting anything
+    // outside the old two-entry list.
+    return EffectsRepository::get()->exists(key) ? key : QString();
 }
 
 int VibeCutTools::selectedClipId() const
@@ -147,25 +164,34 @@ QJsonArray VibeCutTools::schemas() const
                              {QStringLiteral("properties"), QJsonObject{}},
                              {QStringLiteral("additionalProperties"), false}};
 
-    QJsonArray effectKeys;
-    for (const QString &k : effectAllowlist().keys()) {
-        effectKeys.append(k);
-    }
-
     QJsonObject applyEffectSchema{
         {QStringLiteral("type"), QStringLiteral("object")},
         {QStringLiteral("properties"),
          QJsonObject{
              {QStringLiteral("effect"),
               QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
-                          {QStringLiteral("enum"), effectKeys},
-                          {QStringLiteral("description"), QStringLiteral("Which allowlisted effect to add.")}}},
+                          {QStringLiteral("description"),
+                           QStringLiteral("A friendly alias ('denoise', 'denoise_light') or a real Kdenlive/MLT "
+                                          "effect id (e.g. 'avfilter.curves', 'frei0r.coloradj_RGB') - use "
+                                          "effect_search first if you don't already know the exact id.")}}},
              {QStringLiteral("clip_id"),
               QJsonObject{{QStringLiteral("type"), QStringLiteral("integer")},
                           {QStringLiteral("description"),
                            QStringLiteral("Timeline clip id from timeline_list_clips. Omit to use the current selection.")}}},
          }},
         {QStringLiteral("required"), QJsonArray{QStringLiteral("effect")}},
+        {QStringLiteral("additionalProperties"), false}};
+
+    QJsonObject effectSearchSchema{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("properties"),
+         QJsonObject{{QStringLiteral("query"),
+                      QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
+                                  {QStringLiteral("description"),
+                                   QStringLiteral("Case-insensitive substring to match against effect names and ids "
+                                                  "(e.g. 'color', 'contrast', 'levels', 'crop'). Results are capped, "
+                                                  "so narrow this rather than leaving it broad.")}}}}},
+        {QStringLiteral("required"), QJsonArray{QStringLiteral("query")}},
         {QStringLiteral("additionalProperties"), false}};
 
     QJsonObject askUserSchema{
@@ -222,6 +248,13 @@ QJsonArray VibeCutTools::schemas() const
                                     "like a cafe, street or crowd); use 'denoise_light' only if the user asks for the "
                                     "lighter RNNoise filter or wants to preserve more room ambience.")},
                     {QStringLiteral("input_schema"), applyEffectSchema}},
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("effect_search")},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Search Kdenlive's real effect repository (the same list its own 'Add Effect' "
+                                    "panel uses) by name/id substring. Use this to find the exact id to pass to "
+                                    "effect_apply for anything beyond the 'denoise'/'denoise_light' aliases - color "
+                                    "correction, transforms, crop, speed, transitions, whatever the user asks for.")},
+                    {QStringLiteral("input_schema"), effectSearchSchema}},
         QJsonObject{{QStringLiteral("name"), QStringLiteral("ask_user")},
                     {QStringLiteral("description"),
                      QStringLiteral("Ask the user a clarifying question when an answer would change which clip or "
@@ -262,6 +295,9 @@ QJsonObject VibeCutTools::invoke(const QString &name, const QJsonObject &input)
     }
     if (name == QLatin1String("effect_apply")) {
         return toolApplyEffect(input);
+    }
+    if (name == QLatin1String("effect_search")) {
+        return toolEffectSearch(input);
     }
     if (name == QLatin1String("ask_user")) {
         return toolAskUser(input);
@@ -324,21 +360,32 @@ QJsonObject VibeCutTools::toolApplyEffect(const QJsonObject &input)
     const QString key = input.value(QStringLiteral("effect")).toString();
     const QString assetId = resolveEffectId(key);
     if (assetId.isEmpty()) {
-        return err(QStringLiteral("Effect '%1' is not on the allowlist.").arg(key));
+        return err(QStringLiteral("'%1' isn't a known effect id or alias. Call effect_search to find the real "
+                                   "Kdenlive/MLT id for what you're after.")
+                       .arg(key));
     }
 
-    // effect_apply is currently audio-only, and an AV-split video-only twin
-    // can never host an audio effect - exclude it up front instead of
-    // attempting and failing on it (which is what used to happen: applying
-    // to "both" clips of a split pair, one guaranteed to fail).
-    auto hasAudio = [&model](int cid) { return model->getClipState(cid).first != PlaylistState::VideoOnly; };
+    // An AV-split video-only or audio-only twin can never host an effect of
+    // the wrong kind - exclude it up front instead of attempting and failing
+    // (which is what used to happen when this was audio-only and applied to
+    // "both" clips of a split pair, one guaranteed to fail). Generalised from
+    // the old audio-only assumption now that any real effect id is allowed:
+    // ask the repository what kind this effect actually is.
+    const bool isAudioFx = EffectsRepository::get()->isAudioEffect(assetId);
+    auto isCompatible = [&model, isAudioFx](int cid) {
+        const PlaylistState::ClipState state = model->getClipState(cid).first;
+        return isAudioFx ? (state != PlaylistState::VideoOnly) : (state != PlaylistState::AudioOnly);
+    };
     QString resolveError;
-    const int clipId = resolveTargetClip(model, input, hasAudio, resolveError);
+    const int clipId = resolveTargetClip(model, input, isCompatible, resolveError);
     if (clipId == -1) {
         return err(resolveError);
     }
-    if (!hasAudio(clipId)) {
-        return err(QStringLiteral("Clip %1 is video-only and can't host an audio effect.").arg(clipId));
+    if (!isCompatible(clipId)) {
+        return err(QStringLiteral("Clip %1 is %2-only and can't host %3 effect '%4'.")
+                       .arg(clipId)
+                       .arg(isAudioFx ? QStringLiteral("video") : QStringLiteral("audio"),
+                            isAudioFx ? QStringLiteral("an audio") : QStringLiteral("a video"), key));
     }
 
     std::shared_ptr<EffectStackModel> stack = model->getClipEffectStack(clipId);
@@ -373,6 +420,36 @@ QJsonObject VibeCutTools::toolApplyEffect(const QJsonObject &input)
                        {QStringLiteral("clip_id"), clipId},
                        {QStringLiteral("already_present"), false},
                        {QStringLiteral("effect_count_on_clip"), stack->rowCount()}};
+}
+
+QJsonObject VibeCutTools::toolEffectSearch(const QJsonObject &input)
+{
+    const QString query = input.value(QStringLiteral("query")).toString().trimmed();
+    if (query.isEmpty()) {
+        return err(QStringLiteral("query must not be empty - the full effect list is too large to dump unfiltered."));
+    }
+
+    // getNames() is (id, name) pairs straight from the same repository
+    // Kdenlive's own "Add Effect" panel is populated from - not a hand-picked
+    // subset, so this can genuinely find anything the app itself can do.
+    const QVector<QPair<QString, QString>> all = EffectsRepository::get()->getNames();
+    constexpr int kMaxResults = 30;
+    QJsonArray results;
+    for (const auto &[id, displayName] : all) {
+        if (id.contains(query, Qt::CaseInsensitive) || displayName.contains(query, Qt::CaseInsensitive)) {
+            results.append(QJsonObject{{QStringLiteral("id"), id},
+                                       {QStringLiteral("name"), displayName},
+                                       {QStringLiteral("is_audio"), EffectsRepository::get()->isAudioEffect(id)}});
+            if (results.size() >= kMaxResults) {
+                break;
+            }
+        }
+    }
+    return QJsonObject{{QStringLiteral("ok"), true},
+                       {QStringLiteral("query"), query},
+                       {QStringLiteral("count"), results.size()},
+                       {QStringLiteral("truncated"), results.size() >= kMaxResults},
+                       {QStringLiteral("effects"), results}};
 }
 
 QJsonObject VibeCutTools::toolAskUser(const QJsonObject &input)

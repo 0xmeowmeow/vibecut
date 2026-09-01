@@ -27,6 +27,8 @@ kde-ci-reports/*
 # vibecut local build artifacts (root-level flatpak-builder invocation)
 /.flatpak-builder/
 /build.log
+/build[0-9]*.log
 /install.log
 /kdenlive-run.log
+/kdenlive-ollama-test.log
 /.vibecut-scratch/

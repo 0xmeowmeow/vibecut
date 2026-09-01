@@ -36,8 +36,17 @@ public:
     explicit VibeCutAgent(VibeCutTools *tools, QObject *parent = nullptr);
     ~VibeCutAgent() override;
 
-    /** True when ANTHROPIC_API_KEY was found in the environment. */
+    /** True when the configured backend is usable: for Anthropic, a key was
+     *  found in the environment; for Ollama, always true (no key needed) -
+     *  see notReadyMessage() for what's actually missing when this is false. */
     bool hasApiKey() const;
+    /** Empty when hasApiKey() is true; otherwise the reason to show the user. */
+    QString notReadyMessage() const;
+    /** "qwen3.8:27b (Ollama, local)" / "claude-sonnet-5 (Anthropic)" - which
+     *  model is actually answering, for the welcome message. Backend choice
+     *  is env-var only for now (VIBECUT_BACKEND=ollama, VIBECUT_MODEL=...,
+     *  VIBECUT_OLLAMA_HOST=...) - a real settings panel is TODO.md tracked. */
+    QString modelLabel() const;
 
     /** Whether a request/tool loop is currently in flight. */
     bool busy() const { return m_reply != nullptr; }
@@ -81,17 +90,36 @@ private Q_SLOTS:
     void onFinished();
 
 private:
+    enum class Backend { Anthropic, Ollama };
+
     void startRequest();
-    void handleEvent(const SseParser::Event &ev);
+    void startRequestAnthropic();
+    void startRequestOllama();
+    void handleEvent(const SseParser::Event &ev); ///< Anthropic SSE events
+    void handleOllamaLine(const QByteArray &line); ///< one NDJSON line from Ollama's /api/chat
     void finishTurn();
     void fail(const QString &message);
     void resetStreamState();
     QString historyDiagnostic() const;
 
+    /** m_messages stays Anthropic-content-block-shaped regardless of backend
+     *  (single internal history format, one set of turn-management code) -
+     *  these translate it to/from Ollama's flatter {role,content,tool_calls}
+     *  shape only at the wire boundary. */
+    static QJsonArray ollamaToolsFromSchemas(const QJsonArray &anthropicTools);
+    QJsonArray ollamaMessagesFromHistory() const;
+
     QNetworkAccessManager *m_nam;
     QNetworkReply *m_reply = nullptr;
     VibeCutTools *m_tools;
     SseParser m_sse;
+    QByteArray m_ndjsonBuf; ///< partial line buffer for the Ollama path
+
+    Backend m_backend = Backend::Anthropic;
+    QString m_ollamaHost;
+    int m_ollamaNumCtx = 32768;
+    double m_ollamaTemperature = 0.3;
+    bool m_ollamaSawToolCallThisTurn = false;
 
     QString m_apiKey;
     QString m_model;

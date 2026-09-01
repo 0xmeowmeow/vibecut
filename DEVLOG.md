@@ -421,3 +421,113 @@ trusting the prior call:
 
 Recorded the device trap in `KDENLIVE_INTERNALS.md` next to the existing
 Whisper script notes.
+
+## 2026-09-01 — swapping the brain: a local model stands in for Claude
+
+Read through a `going-forward.md` wishlist (harnesses, skills, an asset
+library, a scoped owned folder, persistent memory, a GitHub on-ramp, an
+external API) and mapped each item against what `DESIGN_SPECS.md` and
+`TODO.md` already covered before touching anything. Almost all of it
+already had a home; the one genuinely new, user-picked priority was
+first on the list for a reason: **can something other than Claude drive
+this agent at all?** Chose `qwen3.8:27b` via a local Ollama install
+(already pulled, already running) as the test case.
+
+Verified the wire protocol against the live Ollama server with `curl`
+before writing any C++ — real tool-calling (`tool_calls` in the
+response), the multi-turn shape (`role: "tool"` messages, no
+`tool_call_id` matching needed), and that streaming is NDJSON (one whole
+JSON object per line, tool-call arguments arrive complete rather than
+incrementally like Anthropic's `input_json_delta`) rather than guessing
+from docs. Added a second backend to `VibeCutAgent` chosen by
+`VIBECUT_BACKEND=ollama` (default stays `anthropic`, nothing changes for
+an unconfigured checkout): all the already-verified turn-management logic
+(retry-on-empty-turn, the tool-execution loop, the max-turn cap) stayed
+fully shared, since the internal history representation stays
+Anthropic-content-block-shaped regardless of backend and only gets
+translated to Ollama's flatter shape at the request-building boundary.
+Smaller, more reviewable change than a full backend-interface rewrite.
+
+First live test immediately exposed a real, separate bug that had
+nothing to do with the new backend: asked it to "fix the colour levels"
+and it refused, correctly reporting that only `denoise`/`denoise_light`
+were on `effect_apply`'s allowlist. The user's reaction was the right
+one — *"It should be able to do anything within the program. It can't be
+limited to the things I've requested."* This is exactly what
+`DESIGN_SPECS.md` §2 already says the tool surface should be, just never
+followed through on past the first two entries. The real fix: stopped
+hand-picking effect ids and validated against `EffectsRepository::get()`
+instead — the same real repository Kdenlive's own "Add Effect" panel
+reads from — plus a new `effect_search` tool (name/id substring search,
+capped results) so the model can discover the right id instead of
+guessing. `resolveEffectId()` now checks the small friendly-alias map
+first, then falls through to "is this a real Kdenlive asset id" via
+`exists()`. The audio-only clip-compatibility check generalised the same
+way: `EffectsRepository::isAudioEffect()` decides which kind of clip an
+effect needs, instead of a hardcoded audio-only assumption baked in from
+when denoise was the only option. Hit two dumb brace-matching bugs
+writing the new JSON-Schema blocks by hand (dropped a closing brace
+each time, both caught by the build failing, not glossed over) — wrote a
+small Python brace-balance checker and hand-traced both schema blocks
+before the third rebuild rather than guessing a third time.
+
+Second live test (a compound request: list clips, fix color on the video
+track, fix audio on the audio track) surfaced the real reliability
+problem with this backend: turns kept coming back completely empty (no
+text, no tool call) right after a tool result — not a parsing bug (ruled
+out with a direct `curl` repro reproducing the exact message shape, both
+streamed and non-streamed, which came back with real content both
+times), more likely a reasoning-model sampling quirk (`qwen3.8:27b`'s own
+defaults are `temperature 1`, easy for a thinking-heavy model to emit an
+early stop right after its thinking closes). Bumping `num_ctx` from
+Ollama's 4096 default to 32768 was the first guess and didn't fix it —
+worth recording since a plausible-sounding first theory (context
+exhaustion) turned out to be wrong, confirmed by the bug recurring at
+only ~800 bytes of history. Two real fixes instead: dropped the sampling
+temperature to 0.3 (standard practice for tool-calling agents regardless
+of root cause), and stopped sharing one `m_emptyTurnRetries` budget
+across an entire compound exchange — it now resets after every
+successful tool call, so a 4-tool-call exchange gets a fresh two-attempt
+allowance at each step instead of exhausting a shared pool by its second
+tool call (confirmed exhausting it before this fix: a real exchange
+ended with tool calls that had genuinely executed but no closing text,
+shown to the user as tool results with no wrap-up sentence — not a lie,
+but a bad experience).
+
+Third live test (the same compound request) held up under the
+reliability fix and it's the best evidence yet this actually works: the
+model initially mislabelled which clip was audio vs. video in its own
+prose (backwards from the real assignment `effect_apply` had already
+proven a session earlier), tried to denoise the video-only clip, got a
+real rejection from the tool, and **self-corrected from the error
+message alone** — no user intervention needed — before finding `gain`
+and `avfilter.colorcorrect` via `effect_search` (neither hand-picked,
+both genuinely discovered) and applying them for real (cross-checked
+against the app's own effect-repository parsing log, not just trusted
+narration). The wrong-clip guess turning into a caught-and-corrected
+error rather than a silent wrong action is `DESIGN_SPECS.md` §3's
+verification discipline paying for itself on a second backend.
+
+Two gaps found live, deliberately not fixed tonight: `timeline_list_clips`
+doesn't return each clip's audio/video type, so the model has no grounded
+way to know which is which short of trial and error against
+`effect_apply`'s real check — the mislabelling above was this gap, not a
+one-off. And `effect_apply` can add an effect but has no way to set its
+parameters — `avfilter.colorlevels`/`avfilter.colorcorrect` land with
+every value at its identity default (confirmed: user added it, "it didn't
+modify the existing levels"), so it's a real effect but a functional
+no-op until something can drive its parameters too. Both queued in
+`TODO.md` rather than scope-crept into tonight's change.
+
+Also worth a note for later: found
+[browser-use/video-use](https://github.com/browser-use/video-use) — an
+agent-driven video editor with real design overlap. Its two-layer context
+strategy (a structured transcript with word-level timestamps + speaker
+ID as the primary data, on-demand filmstrip/waveform composites only at
+actual decision points, ~12KB/project total) is a better shape for the
+still-queued subtitle-read tool than plain line search. It also keeps a
+`project.md` for session continuity — independent validation of the
+`going-forward.md` memory-file idea, same mechanism. And it's built
+specifically around removing filler words/dead space between takes,
+which is a real candidate answer to the still-open "what takes longest in
+a real editing session?" question.
