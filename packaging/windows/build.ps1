@@ -172,6 +172,86 @@ function Save-VerifiedDownload {
     }
 }
 
+function Use-ReliableMsgfmt {
+    param(
+        [Parameter(Mandatory = $true)][string]$CraftRoot,
+        [Parameter(Mandatory = $true)][string]$SourceRoot
+    )
+
+    $nativeMsgfmt = Join-Path $CraftRoot 'bin\msgfmt.exe'
+    $nativeMsgfmtBackup = Join-Path $CraftRoot 'bin\msgfmt-msvc.exe'
+    $msysBin = Join-Path $CraftRoot 'msys\usr\bin'
+    $msysMsgfmt = Join-Path $msysBin 'msgfmt.exe'
+    $isolatedBin = Join-Path $CraftRoot 'dev-utils\vibecut-gettext\bin'
+    $isolatedMsgfmt = Join-Path $isolatedBin 'msgfmt.exe'
+    $probeCatalog = Join-Path $SourceRoot 'po\pl\kdenlive.po'
+
+    foreach ($requiredFile in @($msysMsgfmt, $probeCatalog)) {
+        if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
+            throw "Required gettext file is missing: $requiredFile"
+        }
+    }
+
+    New-Item -ItemType Directory -Path $isolatedBin -Force | Out-Null
+    $runtimePatterns = @(
+        'msgfmt.exe',
+        'msys-2.0.dll',
+        'msys-gettextsrc-*.dll',
+        'msys-gettextlib-*.dll',
+        'msys-intl-*.dll',
+        'msys-iconv-*.dll'
+    )
+    foreach ($pattern in $runtimePatterns) {
+        $runtimeFiles = @(Get-ChildItem -LiteralPath $msysBin -Filter $pattern -File)
+        if ($runtimeFiles.Count -eq 0) {
+            throw "The pinned MSYS gettext runtime is missing $pattern."
+        }
+        foreach ($runtimeFile in $runtimeFiles) {
+            Copy-Item -LiteralPath $runtimeFile.FullName -Destination $isolatedBin -Force
+        }
+    }
+
+    # Gettext's native MSVC msgfmt can terminate with STATUS_STACK_BUFFER_OVERRUN
+    # on a clean Windows runner. Craft's pinned MSYS bootstrap already contains a
+    # newer msgfmt, so verify an isolated copy against a real catalog before use.
+    $probeDirectory = Join-Path (Join-Path $CraftRoot 'tmp') ("vibecut-msgfmt-probe-{0}" -f [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $probeDirectory -Force | Out-Null
+    try {
+        $probeOutput = Join-Path $probeDirectory 'kdenlive.mo'
+        Invoke-Checked $isolatedMsgfmt '--check' '-o' $probeOutput $probeCatalog
+        if (-not (Test-Path -LiteralPath $probeOutput -PathType Leaf) -or
+            (Get-Item -LiteralPath $probeOutput).Length -eq 0) {
+            throw 'The isolated MSYS msgfmt probe did not produce a compiled catalog.'
+        }
+    }
+    finally {
+        $resolvedProbeDirectory = [System.IO.Path]::GetFullPath($probeDirectory)
+        $resolvedCraftTmp = [System.IO.Path]::GetFullPath((Join-Path $CraftRoot 'tmp')).TrimEnd('\') + '\'
+        if ($resolvedProbeDirectory.StartsWith($resolvedCraftTmp, [System.StringComparison]::OrdinalIgnoreCase) -and
+            ([System.IO.Path]::GetFileName($resolvedProbeDirectory) -like 'vibecut-msgfmt-probe-*')) {
+            Remove-Item -LiteralPath $resolvedProbeDirectory -Recurse -Force
+        }
+    }
+
+    if (Test-Path -LiteralPath $nativeMsgfmt -PathType Leaf) {
+        Move-Item -LiteralPath $nativeMsgfmt -Destination $nativeMsgfmtBackup -Force
+    }
+    elseif (-not (Test-Path -LiteralPath $nativeMsgfmtBackup -PathType Leaf)) {
+        throw "Craft's native msgfmt was not installed at $nativeMsgfmt."
+    }
+
+    $remainingPath = @($env:PATH -split ';') | Where-Object {
+        $_ -and -not $_.Equals($isolatedBin, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    $env:PATH = (@($isolatedBin) + $remainingPath) -join ';'
+
+    $selectedMsgfmt = Get-Command msgfmt.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    if (-not $selectedMsgfmt.Source.Equals($isolatedMsgfmt, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Expected the isolated MSYS msgfmt at $isolatedMsgfmt, but resolved $($selectedMsgfmt.Source)."
+    }
+    Write-Host "Using verified build-time msgfmt: $($selectedMsgfmt.Source)"
+}
+
 function Test-PackagedBuild {
     param(
         [Parameter(Mandatory = $true)][string]$ArtifactDirectory,
@@ -379,6 +459,10 @@ try {
         '--options', "craft/craft-blueprints-kde.revision=$KdeBlueprintCommit"
     )
 
+    # Build gettext first so its native tool can be replaced before GLib and the
+    # rest of Kdenlive's dependency graph compile their translation catalogs.
+    Invoke-Checked $PythonPath $craftScript @commonCraftArguments 'libs/gettext'
+    Use-ReliableMsgfmt -CraftRoot $CraftRoot -SourceRoot $sourceRoot
     Invoke-Checked $PythonPath $craftScript @commonCraftArguments '--install-deps' 'kdenlive'
     Invoke-Checked $PythonPath $craftScript @commonCraftArguments '--no-cache' '--ignoreInstalled' 'kdenlive'
 
