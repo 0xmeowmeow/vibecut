@@ -428,6 +428,7 @@ try {
     Set-IniValue $craftSettings 'BlueprintVersions' 'EnableDailyUpdates' 'False'
     Set-IniValue $craftSettings 'Packager' 'PackageType' 'NullsoftInstallerPackager'
     Set-IniValue $craftSettings 'Packager' 'PackageDebugSymbols' 'False'
+    Set-IniValue $craftSettings 'ShortPath' 'DriveLetter' 'Z:/'
 
     $blueprintDirectory = Join-Path $CraftRoot 'etc\blueprints\locations\craft-blueprints-kde'
     if (-not (Test-Path -LiteralPath (Join-Path $blueprintDirectory '.git'))) {
