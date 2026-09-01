@@ -120,6 +120,55 @@ function Test-Checksum {
     }
 }
 
+function Copy-CraftPackageArtifacts {
+    param(
+        [Parameter(Mandatory = $true)][string]$CraftRoot,
+        [Parameter(Mandatory = $true)][string]$OutputDirectory,
+        [Parameter(Mandatory = $true)][datetime]$CreatedAfter
+    )
+
+    $packageDirectory = Join-Path $CraftRoot 'tmp'
+    $timestampFloor = $CreatedAfter.ToUniversalTime().AddSeconds(-5)
+    $archives = @(Get-ChildItem -LiteralPath $packageDirectory -Filter '*.7z' -File | Where-Object {
+            $_.LastWriteTimeUtc -ge $timestampFloor
+        })
+    $installers = @(Get-ChildItem -LiteralPath $packageDirectory -Filter '*.exe' -File | Where-Object {
+            $_.LastWriteTimeUtc -ge $timestampFloor
+        })
+
+    if ($archives.Count -ne 1 -or $installers.Count -ne 1) {
+        $recentFiles = @(Get-ChildItem -LiteralPath $packageDirectory -File |
+            Sort-Object LastWriteTimeUtc -Descending |
+            Select-Object -First 20 |
+            ForEach-Object { "$($_.Name) ($($_.LastWriteTimeUtc.ToString('o')))" })
+        throw "Craft created an unexpected package set. Expected one .7z and one .exe created after $($timestampFloor.ToString('o')). Recent files: $($recentFiles -join ', ')"
+    }
+
+    $archiveBaseName = [System.IO.Path]::GetFileNameWithoutExtension($archives[0].Name)
+    $installerBaseName = [System.IO.Path]::GetFileNameWithoutExtension($installers[0].Name)
+    if ($archiveBaseName -ne $installerBaseName) {
+        throw "Craft package names do not match: $($archives[0].Name) and $($installers[0].Name)."
+    }
+
+    New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+    foreach ($package in @(
+            @{ Source = $archives[0].FullName; Suffix = '.7z' },
+            @{ Source = $installers[0].FullName; Suffix = '.exe' }
+        )) {
+        $sourceChecksum = "$($package.Source).sha256"
+        if (-not (Test-Path -LiteralPath $sourceChecksum -PathType Leaf)) {
+            throw "Craft did not create a checksum for $($package.Source)."
+        }
+        Test-Checksum $package.Source $sourceChecksum
+
+        $destination = Join-Path $OutputDirectory "$PackageBaseName$($package.Suffix)"
+        Copy-Item -LiteralPath $package.Source -Destination $destination -Force
+        Copy-Item -LiteralPath $sourceChecksum -Destination "$destination.sha256" -Force
+    }
+
+    Write-Host "Collected Craft packages produced as $archiveBaseName."
+}
+
 function Save-VerifiedDownload {
     param(
         [Parameter(Mandatory = $true)][string]$Url,
@@ -503,16 +552,9 @@ try {
 
     if (-not $BuildOnly) {
         Invoke-Checked $PythonPath $craftScript @commonCraftArguments 'nsis'
+        $packageStartedAt = [datetime]::UtcNow
         Invoke-Checked $PythonPath $craftScript @commonCraftArguments '--package' 'kdenlive'
-
-        New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
-        foreach ($suffix in @('.7z', '.7z.sha256', '.exe', '.exe.sha256')) {
-            $sourceArtifact = Join-Path (Join-Path $CraftRoot 'tmp') "$PackageBaseName$suffix"
-            if (-not (Test-Path -LiteralPath $sourceArtifact -PathType Leaf)) {
-                throw "Expected package artifact was not created: $sourceArtifact"
-            }
-            Copy-Item -LiteralPath $sourceArtifact -Destination $OutputDirectory -Force
-        }
+        Copy-CraftPackageArtifacts $CraftRoot $OutputDirectory $packageStartedAt
 
         $sevenZip = Join-Path $CraftRoot 'dev-utils\bin\7za.exe'
         if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) {

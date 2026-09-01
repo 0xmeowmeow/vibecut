@@ -23,7 +23,7 @@ From the repository root:
 .\packaging\windows\build.ps1
 ```
 
-The first run bootstraps an isolated Craft environment at `C:\CraftVibeCut`. Later runs reuse its dependencies but always rebuild VibeCut from the current checkout. Packages are written to `artifacts\windows`.
+The first run bootstraps an isolated Craft environment at `C:\CraftVibeCut`. Later runs reuse its dependencies but always rebuild VibeCut from the current checkout. Packages are written to `artifacts\windows`. Craft derives its temporary package name from the Git checkout state; the script verifies the packages created by the current invocation and normalizes their output names so branch checkouts and detached commit checkouts produce the same artifacts.
 
 To compile and install into the Craft root without creating packages:
 
