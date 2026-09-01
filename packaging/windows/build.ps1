@@ -18,6 +18,8 @@ $ErrorActionPreference = 'Stop'
 $CraftCommit = 'b80e8f8c6c4f9fc8c09464dc8b696bfa625fa12c'
 $KdeBlueprintCommit = '96127a2b665ecd645058e5157b468bca721cbc65'
 $PackageBaseName = 'kdenlive-vibecut-windows-cl-msvc2022-x86_64'
+$LibPngArchiveUrl = 'https://codeload.github.com/pnggroup/libpng/tar.gz/refs/tags/v1.6.45'
+$LibPngArchiveSha256 = '7ff6898520645716ddc3d8381d97b6e02937b03da92e6fd0d7cf9d7d2b0da780'
 
 function Invoke-Checked {
     param(
@@ -113,6 +115,60 @@ function Test-Checksum {
     $actual = (Get-FileHash -LiteralPath $ArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $expected) {
         throw "SHA-256 mismatch for $ArtifactPath. Expected $expected, got $actual."
+    }
+}
+
+function Save-VerifiedDownload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$Sha256
+    )
+
+    $expectedHash = $Sha256.ToLowerInvariant()
+    if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+        $existingHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($existingHash -eq $expectedHash) {
+            Write-Host "Using verified cached download: $Destination"
+            return
+        }
+        Write-Warning "Replacing an invalid cached download: $Destination"
+    }
+
+    $destinationDirectory = Split-Path -Parent $Destination
+    New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
+
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        $temporaryDownload = "$Destination.partial-$([guid]::NewGuid().ToString('N'))"
+        try {
+            Write-Host "Downloading $Url (attempt $attempt of 5)"
+            $savedProgressPreference = $ProgressPreference
+            try {
+                $ProgressPreference = 'SilentlyContinue'
+                Invoke-WebRequest -Uri $Url -OutFile $temporaryDownload -UseBasicParsing
+            }
+            finally {
+                $ProgressPreference = $savedProgressPreference
+            }
+            $actualHash = (Get-FileHash -LiteralPath $temporaryDownload -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+                throw "SHA-256 mismatch. Expected $expectedHash, got $actualHash."
+            }
+            Move-Item -LiteralPath $temporaryDownload -Destination $Destination -Force
+            return
+        }
+        catch {
+            if ($attempt -eq 5) {
+                throw "Could not download and verify $Url after 5 attempts: $($_.Exception.Message)"
+            }
+            Write-Warning "Download attempt $attempt failed: $($_.Exception.Message)"
+            Start-Sleep -Seconds ([math]::Pow(2, $attempt))
+        }
+        finally {
+            if (Test-Path -LiteralPath $temporaryDownload -PathType Leaf) {
+                Remove-Item -LiteralPath $temporaryDownload -Force
+            }
+        }
     }
 }
 
@@ -303,6 +359,14 @@ try {
     if ($installedBlueprintCommit -ne $KdeBlueprintCommit) {
         Invoke-Checked $gitCommand.Source '-C' $blueprintDirectory 'fetch' 'origin' $KdeBlueprintCommit '--depth=1'
         Invoke-Checked $gitCommand.Source '-C' $blueprintDirectory 'checkout' '--detach' $KdeBlueprintCommit
+    }
+
+    # SourceForge occasionally truncates this archive on GitHub-hosted runners.
+    # Seed the same tagged source from libpng's official GitHub repository and
+    # verify it before Craft starts resolving the Kdenlive dependency graph.
+    if ($DownloadDirectory) {
+        $libPngArchive = Join-Path $DownloadDirectory 'archives\libs\libpng\libpng-1.6.45.tar.gz'
+        Save-VerifiedDownload $LibPngArchiveUrl $libPngArchive $LibPngArchiveSha256
     }
 
     $sourceOption = 'kdenlive.srcDir=' + $sourceRoot.Replace('\', '/')
