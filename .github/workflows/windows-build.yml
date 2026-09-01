@@ -6,12 +6,29 @@ on:
     branches:
       - vibecut
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact commit to build. Event workflows use GitHub's event commit.
+        required: false
+        default: ""
+        type: string
+      artifact_name:
+        description: Name of the uploaded Windows artifact.
+        required: false
+        default: vibecut-windows-msvc2022
+        type: string
+      retention_days:
+        description: Number of days to retain the uploaded artifact.
+        required: false
+        default: 14
+        type: number
 
 permissions:
   contents: read
 
 concurrency:
-  group: vibecut-windows-${{ github.event.pull_request.number || github.ref }}
+  group: vibecut-windows-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -23,6 +40,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ inputs.source_ref || github.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -53,9 +71,9 @@ jobs:
       - name: Upload Windows packages
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: vibecut-windows-msvc2022
+          name: ${{ inputs.artifact_name || 'vibecut-windows-msvc2022' }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ inputs.retention_days || 14 }}
           path: artifacts/windows/*
 
       - name: Save KDE Craft downloads

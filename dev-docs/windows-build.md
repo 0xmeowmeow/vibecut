@@ -39,4 +39,12 @@ The package validation checks SHA-256 sidecars, tests the NSIS payload, extracts
 
 `.github/workflows/windows-build.yml` runs the same script on `windows-2022` for pull requests, pushes to `vibecut`, and manual dispatches. It caches only Craft downloads; the compiler environment and install tree are recreated on each runner so cached state cannot hide build failures.
 
+The build workflow is also reusable by `.github/workflows/windows-release.yml`. The release workflow is manually dispatched and pins its build to one resolved source commit. It has three modes:
+
+- `validate` builds, smoke-tests, canonicalizes, and uploads versioned release assets without creating a tag or GitHub Release.
+- `draft` performs the same gates and creates a disposable draft release with a unique test tag. Use this mode in a fork before proposing release changes upstream.
+- `publish` creates the canonical `v<version>` release as a draft and publishes it only after every build and checksum gate passes.
+
+Draft and published releases must be built from the repository's current default-branch commit. Existing tags and releases are never overwritten. Both release modes attach the Windows installer, portable archive, individual SHA-256 sidecars, a combined checksum file, and GitHub build-provenance attestations.
+
 Rattler is not used for this target because VibeCut depends on the KDE Frameworks, MLT, and Kdenlive packaging graph maintained by KDE Craft. Craft provides the Windows binary cache and installer logic used by this build.
