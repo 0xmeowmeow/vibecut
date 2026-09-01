@@ -348,10 +348,18 @@ $savedEnvironment = @{
     Path = $env:PATH
     CraftRoot = $env:CraftRoot
     CraftPython = $env:CRAFT_PYTHON
+    AndroidSdkRoot = $env:ANDROID_SDK_ROOT
+    AndroidNdk = $env:ANDROID_NDK
 }
 $savedLocation = Get-Location
 
 try {
+    # GitHub's Windows runner exposes Android tooling globally. Craft's bootstrap
+    # treats the presence of both variables as an Android target and otherwise
+    # overrides the Windows build profile with MinSizeRel.
+    $env:ANDROID_SDK_ROOT = $null
+    $env:ANDROID_NDK = $null
+
     $pathParts = @(
         "$env:SystemRoot\System32",
         $env:SystemRoot,
@@ -537,4 +545,6 @@ finally {
     $env:PATH = $savedEnvironment.Path
     $env:CraftRoot = $savedEnvironment.CraftRoot
     $env:CRAFT_PYTHON = $savedEnvironment.CraftPython
+    $env:ANDROID_SDK_ROOT = $savedEnvironment.AndroidSdkRoot
+    $env:ANDROID_NDK = $savedEnvironment.AndroidNdk
 }
