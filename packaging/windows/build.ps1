@@ -319,7 +319,8 @@ try {
         Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'checkout' '--detach' 'FETCH_HEAD'
 
         # A cold MSVC bootstrap builds gettext from source. Patch only that recipe
-        # so its generated gettextlib link includes the already-built libiconv.
+        # so its generated gettextlib link includes the already-built libiconv and
+        # its MSVC runtime check is passed as a separate configure argument.
         $craftBootstrapPatch = Join-Path $PSScriptRoot 'craft-gettext-msvc-iconv.patch'
         Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'apply' '--check' $craftBootstrapPatch
         Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'apply' $craftBootstrapPatch
