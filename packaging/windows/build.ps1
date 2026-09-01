@@ -65,7 +65,9 @@ function Set-IniValue {
     )
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.AddRange([string[]][System.IO.File]::ReadAllLines($Path))
+    if (Test-Path -LiteralPath $Path -PathType Leaf) {
+        $lines.AddRange([string[]][System.IO.File]::ReadAllLines($Path))
+    }
     $sectionLine = -1
     $nextSectionLine = $lines.Count
 
@@ -388,7 +390,7 @@ try {
         }
 
         $bootstrapDirectory = if ($env:RUNNER_TEMP) { $env:RUNNER_TEMP } else { [System.IO.Path]::GetTempPath() }
-        $craftSourceDirectory = Join-Path $bootstrapDirectory "vibecut-craft-source-$CraftCommit"
+        $craftSourceDirectory = Join-Path $bootstrapDirectory ("vibecut-craft-source-{0}-{1}" -f $CraftCommit, [guid]::NewGuid().ToString('N'))
         if (Test-Path -LiteralPath $craftSourceDirectory) {
             throw "Temporary Craft source path already exists: $craftSourceDirectory"
         }
@@ -404,6 +406,19 @@ try {
         $craftBootstrapPatch = Join-Path $PSScriptRoot 'craft-gettext-msvc-iconv.patch'
         Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'apply' '--check' $craftBootstrapPatch
         Invoke-Checked $gitCommand.Source '-C' $craftSourceDirectory 'apply' $craftBootstrapPatch
+
+        # Craft installs its foundational libraries during bootstrap. Set the
+        # final profile in the template first so those package images use the
+        # same build type as Kdenlive and remain available to the packager.
+        $craftSettingsTemplate = Join-Path $craftSourceDirectory 'CraftSettings.ini.template'
+        Set-IniValue $craftSettingsTemplate 'Compile' 'BuildType' 'RelWithDebInfo'
+
+        # The bootstrap installs Craft and its KDE blueprints as packages. Pin
+        # those source checkouts before that first package transaction too.
+        $bootstrapBlueprintSettings = Join-Path $craftSourceDirectory 'BootstrapBlueprintSettings.ini'
+        Set-IniValue $bootstrapBlueprintSettings 'craft/craft-core' 'revision' $CraftCommit
+        Set-IniValue $bootstrapBlueprintSettings 'craft/craft-blueprints-kde' 'revision' $KdeBlueprintCommit
+        Set-IniValue $craftSettingsTemplate 'Blueprints' 'Settings' $bootstrapBlueprintSettings.Replace('\', '/')
 
         $craftBootstrap = Join-Path $craftSourceDirectory 'setup\CraftBootstrap.py'
         $bootstrapExitCode = 1
@@ -421,6 +436,10 @@ try {
     }
 
     $craftSettings = Join-Path $CraftRoot 'etc\CraftSettings.ini'
+    $blueprintSettings = Join-Path $CraftRoot 'etc\BlueprintSettings.ini'
+    Set-IniValue $blueprintSettings 'craft/craft-core' 'revision' $CraftCommit
+    Set-IniValue $blueprintSettings 'craft/craft-blueprints-kde' 'revision' $KdeBlueprintCommit
+    Set-IniValue $craftSettings 'Blueprints' 'Settings' $blueprintSettings.Replace('\', '/')
     if ($DownloadDirectory) {
         New-Item -ItemType Directory -Path $DownloadDirectory -Force | Out-Null
         Set-IniValue $craftSettings 'Paths' 'DownloadDir' $DownloadDirectory
@@ -462,9 +481,6 @@ try {
         '--options', "craft/craft-blueprints-kde.revision=$KdeBlueprintCommit"
     )
 
-    # Bootstrap may install the compiler runtime before the requested build type is applied.
-    # Recreate its image so the collection packager can include the MSVC redistributables.
-    Invoke-Checked $PythonPath $craftScript @commonCraftArguments '--no-cache' '--ignoreInstalled' 'libs/runtime'
     # Build gettext first so its native tool can be replaced before GLib and the
     # rest of Kdenlive's dependency graph compile their translation catalogs.
     Invoke-Checked $PythonPath $craftScript @commonCraftArguments 'libs/gettext'
