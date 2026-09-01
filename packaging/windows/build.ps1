@@ -425,6 +425,8 @@ try {
         New-Item -ItemType Directory -Path $DownloadDirectory -Force | Out-Null
         Set-IniValue $craftSettings 'Paths' 'DownloadDir' $DownloadDirectory
     }
+    # Match KDE's published Windows binary cache instead of inheriting a bootstrap default.
+    Set-IniValue $craftSettings 'Compile' 'BuildType' 'RelWithDebInfo'
     Set-IniValue $craftSettings 'BlueprintVersions' 'EnableDailyUpdates' 'False'
     Set-IniValue $craftSettings 'Packager' 'PackageType' 'NullsoftInstallerPackager'
     Set-IniValue $craftSettings 'Packager' 'PackageDebugSymbols' 'False'
