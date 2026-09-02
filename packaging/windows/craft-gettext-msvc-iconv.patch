@@ -1,0 +1,18 @@
+diff --git a/blueprints/libs/gettext/gettext.py b/blueprints/libs/gettext/gettext.py
+--- a/blueprints/libs/gettext/gettext.py
++++ b/blueprints/libs/gettext/gettext.py
+@@ -116,6 +116,7 @@ class Package(AutoToolsPackageBase):
+         if CraftCore.compiler.isMSVC():
+             # workaround for "'C:C:/CraftRoot/msys/CraftRoot/build/_/527d4567/gettext-0.21/gettext-runtime/libasprintf/autosprintf.cc'"
+             self.subinfo.options.useShadowBuild = False
++            self.subinfo.options.configure.args += ["LIBS=-liconv"]
+             # self.subinfo.options.configure.autoreconf = False
+             # https://github.com/microsoft/vcpkg/blob/c6a4ed75f03a7485cf6fc91794809cd73f8f5aeb/ports/gettext/portfile.cmake#L49
+             self.subinfo.options.configure.args += [
+@@ -122,5 +123,5 @@ class Package(AutoToolsPackageBase):
+                 "ac_cv_func_wcslen=yes",
+-                "ac_cv_func_memmove=yes"
++                "ac_cv_func_memmove=yes",
+                 # The following are required for a full gettext built (libintl and tools).
+                 "gl_cv_func_printf_directive_n=no",  # segfaults otherwise with popup window
+                 "ac_cv_func_memset=yes",  # not detected in release builds

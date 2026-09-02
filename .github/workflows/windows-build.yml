@@ -1,0 +1,84 @@
+name: VibeCut Windows Build
+
+on:
+  pull_request:
+  push:
+    branches:
+      - vibecut
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact commit to build. Event workflows use GitHub's event commit.
+        required: false
+        default: ""
+        type: string
+      artifact_name:
+        description: Name of the uploaded Windows artifact.
+        required: false
+        default: vibecut-windows-msvc2022
+        type: string
+      retention_days:
+        description: Number of days to retain the uploaded artifact.
+        required: false
+        default: 14
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vibecut-windows-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Build and package (MSVC 2022)
+    runs-on: windows-2022
+    timeout-minutes: 240
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Restore KDE Craft downloads
+        id: craft-download-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: C:\CraftVibeCutDownloads
+          key: craft-download-windows-msvc2022-b80e8f8-96127a2-${{ hashFiles('packaging/windows/build.ps1', 'packaging/windows/craft-gettext-msvc-iconv.patch', '.craft.ini') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            craft-download-windows-msvc2022-b80e8f8-96127a2-
+
+      - name: Build, package, and smoke-test VibeCut
+        shell: pwsh
+        run: |
+          $python = Join-Path $env:pythonLocation 'python.exe'
+          ./packaging/windows/build.ps1 `
+            -CraftRoot 'C:\CraftVibeCut' `
+            -DownloadDirectory 'C:\CraftVibeCutDownloads' `
+            -PythonPath $python `
+            -OutputDirectory (Join-Path $env:GITHUB_WORKSPACE 'artifacts\windows')
+
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.artifact_name || 'vibecut-windows-msvc2022' }}
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days || 14 }}
+          path: artifacts/windows/*
+
+      - name: Save KDE Craft downloads
+        if: always() && steps.craft-download-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: C:\CraftVibeCutDownloads
+          key: craft-download-windows-msvc2022-b80e8f8-96127a2-${{ hashFiles('packaging/windows/build.ps1', 'packaging/windows/craft-gettext-msvc-iconv.patch', '.craft.ini') }}-${{ github.run_id }}-${{ github.run_attempt }}

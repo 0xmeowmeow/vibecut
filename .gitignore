@@ -34,3 +34,4 @@ kde-ci-reports/*
 /kdenlive-test.log
 /whisper-turbo-download.log
 /.vibecut-scratch/
+/artifacts/

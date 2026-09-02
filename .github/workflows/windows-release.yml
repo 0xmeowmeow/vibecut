@@ -1,0 +1,243 @@
+name: VibeCut Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch, tag, or commit to build. Draft and published releases must resolve to the current default branch.
+        required: true
+        default: vibecut
+        type: string
+      release_mode:
+        description: Validate only, create a disposable draft release, or publish the canonical release.
+        required: true
+        default: validate
+        type: choice
+        options:
+          - validate
+          - draft
+          - publish
+
+permissions:
+  actions: read
+  attestations: write
+  contents: write
+  id-token: write
+
+concurrency:
+  group: vibecut-windows-release-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact_basename: ${{ steps.meta.outputs.artifact_basename }}
+      release_mode: ${{ steps.meta.outputs.release_mode }}
+      release_tag: ${{ steps.meta.outputs.release_tag }}
+      release_title: ${{ steps.meta.outputs.release_title }}
+      release_version: ${{ steps.meta.outputs.release_version }}
+      source_sha: ${{ steps.meta.outputs.source_sha }}
+    steps:
+      - name: Check out requested source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and validate release metadata
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_MODE: ${{ inputs.release_mode }}
+        run: |
+          set -euo pipefail
+
+          source_sha="$(git rev-parse --verify HEAD)"
+          version_part() {
+            local name="$1"
+            sed -nE "s/^[[:space:]]*set[[:space:]]*\([[:space:]]*RELEASE_SERVICE_VERSION_${name}[[:space:]]+\"([0-9]+)\"[[:space:]]*\).*/\1/p" CMakeLists.txt
+          }
+          major="$(version_part MAJOR)"
+          minor="$(version_part MINOR)"
+          micro="$(version_part MICRO)"
+          if [[ -z "${major}" || -z "${minor}" || -z "${micro}" ]]; then
+            echo "Could not resolve the VibeCut version from CMakeLists.txt." >&2
+            exit 1
+          fi
+
+          release_version="${major}.${minor}.${micro}"
+          artifact_basename="VibeCut-${release_version}-Windows-x86_64"
+          release_tag="v${release_version}"
+          release_title="VibeCut ${release_version}"
+          if [[ "${RELEASE_MODE}" == "draft" ]]; then
+            release_tag="v${release_version}-test.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+            release_title="VibeCut ${release_version} release test"
+          fi
+
+          if [[ "${RELEASE_MODE}" != "validate" ]]; then
+            default_branch="${{ github.event.repository.default_branch }}"
+            git fetch origin "${default_branch}:refs/remotes/origin/${default_branch}" --no-tags
+            default_sha="$(git rev-parse --verify "refs/remotes/origin/${default_branch}")"
+            if [[ "${source_sha}" != "${default_sha}" ]]; then
+              echo "Draft and published releases must use the current ${default_branch} commit." >&2
+              exit 1
+            fi
+            if gh release view "${release_tag}" >/dev/null 2>&1; then
+              echo "Release ${release_tag} already exists and will not be overwritten." >&2
+              exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/${release_tag}" >/dev/null 2>&1; then
+              echo "Tag ${release_tag} already exists and will not be reused." >&2
+              exit 1
+            fi
+          fi
+
+          {
+            echo "artifact_basename=${artifact_basename}"
+            echo "release_mode=${RELEASE_MODE}"
+            echo "release_tag=${release_tag}"
+            echo "release_title=${release_title}"
+            echo "release_version=${release_version}"
+            echo "source_sha=${source_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
+          cat >> "${GITHUB_STEP_SUMMARY}" <<EOF
+          ## ${release_title}
+
+          - Source: \`${source_sha}\`
+          - Tag: \`${release_tag}\`
+          - Mode: \`${RELEASE_MODE}\`
+          EOF
+
+  windows:
+    name: Build validated Windows packages
+    needs: prepare
+    uses: ./.github/workflows/windows-build.yml
+    permissions:
+      contents: read
+    with:
+      source_ref: ${{ needs.prepare.outputs.source_sha }}
+      artifact_name: vibecut-windows-release
+      retention_days: 30
+
+  release:
+    name: Verify and stage release
+    needs:
+      - prepare
+      - windows
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download validated Windows packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: vibecut-windows-release
+          path: dist/input
+
+      - name: Create canonical release assets
+        shell: bash
+        env:
+          ARTIFACT_BASENAME: ${{ needs.prepare.outputs.artifact_basename }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t archives < <(find dist/input -maxdepth 1 -type f -name '*.7z' -print)
+          mapfile -t installers < <(find dist/input -maxdepth 1 -type f -name '*.exe' -print)
+          if [[ "${#archives[@]}" -ne 1 || "${#installers[@]}" -ne 1 ]]; then
+            echo "Expected exactly one portable archive and one installer." >&2
+            exit 1
+          fi
+
+          for package in "${archives[0]}" "${installers[0]}"; do
+            checksum="${package}.sha256"
+            if [[ ! -f "${checksum}" ]]; then
+              echo "Missing build checksum for ${package}." >&2
+              exit 1
+            fi
+            # Craft writes checksum sidecars with Windows CRLF endings. Strip
+            # the carriage return before comparing them on this Linux runner.
+            expected="$(awk 'NR == 1 { gsub(/\r/, "", $1); print tolower($1) }' "${checksum}")"
+            actual="$(sha256sum "${package}" | awk '{ print $1 }')"
+            if [[ "${actual}" != "${expected}" ]]; then
+              echo "Build checksum mismatch for ${package}." >&2
+              exit 1
+            fi
+          done
+
+          mkdir -p dist/release
+          archive="dist/release/${ARTIFACT_BASENAME}.7z"
+          installer="dist/release/${ARTIFACT_BASENAME}-installer.exe"
+          cp "${archives[0]}" "${archive}"
+          cp "${installers[0]}" "${installer}"
+
+          (
+            cd dist/release
+            sha256sum "$(basename "${archive}")" > "$(basename "${archive}").sha256"
+            sha256sum "$(basename "${installer}")" > "$(basename "${installer}").sha256"
+            sha256sum -c ./*.sha256
+            sha256sum "$(basename "${archive}")" "$(basename "${installer}")" > "${ARTIFACT_BASENAME}-SHA256SUMS.txt"
+          )
+
+          find dist/release -maxdepth 1 -type f -print | sort
+
+      - name: Upload canonical release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vibecut-windows-release-assets
+          if-no-files-found: error
+          retention-days: 30
+          path: dist/release/*
+
+      - name: Attest release build provenance
+        if: needs.prepare.outputs.release_mode != 'validate'
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/release/*
+
+      - name: Create draft and optionally publish release
+        if: needs.prepare.outputs.release_mode != 'validate'
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_MODE: ${{ needs.prepare.outputs.release_mode }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
+          RELEASE_TITLE: ${{ needs.prepare.outputs.release_title }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.release_version }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} appeared during the build and will not be overwritten." >&2
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${RELEASE_TAG} appeared during the build and will not be reused." >&2
+            exit 1
+          fi
+
+          cat > release-notes.md <<EOF
+          VibeCut ${RELEASE_VERSION} for Windows.
+
+          Validated assets:
+          - Windows x86-64 installer
+          - Windows x86-64 portable archive
+          - SHA-256 checksums for every package
+
+          Built from ${SOURCE_SHA} by the VibeCut Windows release workflow.
+          EOF
+
+          mapfile -d '' release_files < <(find dist/release -maxdepth 1 -type f -print0)
+          gh release create "${RELEASE_TAG}" "${release_files[@]}" \
+            --draft \
+            --target "${SOURCE_SHA}" \
+            --title "${RELEASE_TITLE}" \
+            --notes-file release-notes.md
+
+          if [[ "${RELEASE_MODE}" == "publish" ]]; then
+            gh release edit "${RELEASE_TAG}" --draft=false --latest
+          fi
