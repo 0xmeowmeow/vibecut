@@ -52,6 +52,91 @@ that's the payoff, not a one-time exhaustive pass.
   the clip visibly doesn't change even though the effect really is on the
   stack. Confirming `hasFilter()` proves the effect landed, not that it
   does anything yet — a separate, still-open gap (see `TODO.md`).
+- **An effect parameter's real MLT name is not its display name**, and its
+  stored value format depends on its XML `type=` attribute - found live
+  2026-09-02 building parameter support into `effect_apply`. Two separate
+  traps, same underlying cause (guessing instead of reading the XML):
+  - `avfilter.colortemperature`'s "Color Temperature" slider is really
+    named `av.temperature`, not `temperature` - Kdenlive prefixes many
+    avfilter-wrapped parameters with `av.`. `EffectsRepository::getXml
+    (assetId)` returns the effect's `<parameter name=... type=... default=
+    ... min=... max=...>` list directly (the same file the UI builds its
+    sliders from) - read real names from there, never guess from the
+    `<name>` display text.
+  - Parameters whose `type=` is one of a specific set need a
+    `"start=value"` keyframe-list string (e.g. `"0=6500"`), not a bare
+    value (`"6500"`) - `AssetParameterModel::setParameter()` will happily
+    accept and store the bare form, and it round-trips through
+    `getParam()` unchanged, so a naive "read it back and compare" check
+    reports success - but MLT's animation parser can't interpret the bare
+    form and silently falls back to the parameter's built-in default at
+    render/display time. The real list of which types need this comes
+    from `AssetParameterModel::isAnimated(ParamType)`
+    (`src/assets/model/assetparametermodel.cpp`) - `protected`, so not
+    directly callable, but small and stable enough to mirror by XML type
+    string: `keyframe`/`animated`, `animatedfakepoint`, `animatedpoint`,
+    `animatedrect`/`rect`, `animatedfakerect`, `colorwheel`,
+    `roto-spline`, and (surprisingly) plain `color` too. Its sibling
+    `getDefaultKeyframes()` builds the real prefix honouring the user's
+    configured default interpolation (`=`/`|=`/`~=`) - also `protected`;
+    vibecut's own version just always uses linear `=`, which is what
+    every observed default in real project files uses.
+- **Some parameters display a `factor=`-scaled number in the UI, not the
+  raw stored value** - e.g. `frei0r.contrast0r`'s `Contrast`
+  (`default="0.5" factor="500"`) and `frei0r.saturat0r`'s `Saturation`
+  (`default="0.125" factor="1000"`). Confirmed live 2026-09-02: setting
+  `Contrast` to `1.3` via `effect_apply` shows as **650** in Kdenlive's
+  effect stack (`1.3 × 500`), and `Saturation` to `0.7` shows as **700**
+  (`0.7 × 1000`) - not a bug, that's the UI's own slider convention (same
+  number a human dragging that exact position would see). If a value
+  looks "wrong" by a clean multiple in the stack UI, check the XML's
+  `factor=` attribute before assuming the write failed - also seen on
+  `lift_gamma_gain`'s colorwheel params (`factor="100"`). Also worth
+  noting: frei0r-native effects (`Contrast`, `Saturation`) and native MLT
+  filters (`lift_gamma_gain`'s `gain_b` etc.) don't use the `av.` prefix
+  convention at all - that's specific to avfilter-wrapped effects. One
+  more reason real names have to come from `effect_search`/`getXml()`,
+  never a guessed convention.
+
+## Timeline structural editing (move/trim/cut/gaps)
+
+Genuinely separate subsystem from the effects one above - lives in
+`TimelineFunctions` (`src/timeline2/model/timelinefunctions.hpp`), a
+`struct` (so everything before its one `private:` block, most of it, is
+public by default) of static methods: `requestClipCut`, `pasteClips`,
+`requestMultipleClipsInsertion`, `requestDeleteBlankAt`/
+`requestDeleteAllBlanksFrom` (gap removal), `requestSpacerStartOperation`/
+`requestSpacerEndOperation` (drag-to-close-gap), `extractZone`/`liftZone`,
+`requestSplitAudio`/`requestSplitVideo`, and more - real timeline editing,
+not effect application.
+
+- **`TimelineController::removeSpace()` is another void-returning UI
+  wrapper**, same trap as `addEffectToClip()` - it resolves `trackId`/
+  `frame` from GUI cursor state (`getMenuOrTimelinePos()`, `m_activeTrack`)
+  when passed `-1`, which doesn't exist in a programmatic caller, then
+  calls the real function and discards its `bool` result. Call
+  `TimelineFunctions::requestDeleteBlankAt(timeline, trackId, position,
+  affectAllTracks)` directly instead - it's public, returns a real
+  success/failure, and is exactly what the wrapper calls internally.
+- **Gap detection has no reachable API** - `TrackModel::isBlankAt`/
+  `getBlankStart`/`getBlankEnd` are `protected`. Derive gaps the same way
+  a human looks at the timeline: per track, sort clips by
+  `getClipPosition()`, and anywhere `nextStart > prevEnd` there's a gap of
+  `nextStart - prevEnd` frames starting at `prevEnd`.
+- **`affectAllTracks=true` requires every unlocked track to have a blank
+  at that exact position**, not just the track you care about (confirmed
+  from the source: it loops all unlocked tracks and returns `false` if any
+  one of them isn't blank there) - correct for keeping an AV-split
+  video/audio pair in sync (they share position by construction, so a
+  real gap between two pieces of footage shows up on both), but it can
+  fail on a project with other unrelated tracks that don't happen to have
+  a gap at that same frame. Worth falling back to `affectAllTracks=false`
+  per-track if the all-tracks call fails, rather than giving up.
+- **Closing a gap shifts every later clip left** - positions computed
+  before one removal are stale for the next. Re-derive gaps fresh after
+  each successful close rather than computing a full gap list once
+  upfront (mirrors how Kdenlive's own `requestDeleteAllBlanksFrom` loops
+  internally for the subtitle-track case).
 
 ## LADSPA audio effects
 

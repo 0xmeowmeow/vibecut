@@ -8,23 +8,22 @@ right section instead of a new file.
 
 ## Now / soon — small, concrete, unblocks something real
 
-- [ ] **`timeline_list_clips` doesn't expose audio/video type.** Found live
-      2026-09-01: with no grounded way to know which clip is audio vs.
-      video, the model guessed in its own prose and got it backwards,
-      tried to denoise the video-only clip, and only found out from
-      `effect_apply`'s real rejection. It self-corrected fine that time
-      (the rejection is proof the verification discipline works), but the
-      model shouldn't have to trial-and-error this — add clip state
-      (`PlaylistState::ClipState` - VideoOnly/AudioOnly/Disabled) to the
-      listing.
-- [ ] **`effect_apply` can add an effect but can't configure it.** Found
-      live 2026-09-01: `avfilter.colorlevels` and `avfilter.colorcorrect`
-      both landed for real (confirmed against the repository parsing log)
-      but with every parameter at its identity default - a real effect
-      that's a functional no-op until something can drive its parameters.
-      Needs a `parameters` input on `effect_apply` (or a separate
-      `effect_set_parameter` tool) wired to the same `EffectStackModel`
-      the apply path already uses.
+- [x] **~~`timeline_list_clips` doesn't expose audio/video type~~ — done
+      2026-09-02.** Added `type` (video_only/audio_only/av/disabled) to
+      every clip in the listing, straight from `PlaylistState::ClipState`.
+      Verified live: correctly counted "3 pieces of footage" from 6
+      AV-split clip ids without conflating them.
+- [x] **~~`effect_apply` can add an effect but can't configure it~~ — done
+      2026-09-02, and generalized further than originally scoped.** Added
+      a `parameters` input, validated against the effect's real XML
+      parameter names (`EffectsRepository::getXml()`) rather than a
+      guessed display name, with values auto-formatted to the
+      `"start=value"` keyframe form the ~10 keyframable parameter types
+      need (mirrors `AssetParameterModel::isAnimated()`'s real type list -
+      see `KDENLIVE_INTERNALS.md`). Verified live across `animated`,
+      `list`, `color`, and `bool` typed parameters on different effects
+      (colortemperature, avgblur, chromahold) - real values landing, real
+      rejections for made-up parameter names.
 - [ ] **Subtitle read access.** The immediate trigger for this list: the
       panel can manage subtitles (create the track, import a transcription)
       but has no tool to *read* one back, so it can't answer "where did I
@@ -38,15 +37,17 @@ right section instead of a new file.
       speaker id as the structured primary layer, on-demand visual
       composites (filmstrip/waveform) only at actual decision points -
       keeps context small deliberately, same principle already in
-      `CLAUDE.md`'s architecture section.
-- [ ] **`generate_subtitles` clip scoping.** Currently transcribes the
-      whole project unless the model explicitly passes `clip_id`, and it
-      doesn't auto-resolve the current selection the way `effect_apply`
-      does via `resolveTargetClip()`. On a long project that's a slow
-      surprise, not a helpful default — apply the same
-      selection-then-single-candidate resolution here, and have the tool
-      description push the model to ask about scope up front rather than
-      silently assume "everything."
+      `CLAUDE.md`'s architecture section. Note found live 2026-09-02:
+      Kdenlive already has a native "Subtitles" dock (`pCore->
+      subtitleWidget()`, `mainwindow.cpp`) for viewing/editing subtitle
+      text by hand - hidden by default like our own panel, toggle it on
+      via the View menu's dock list. That's a real, separate GUI path;
+      it doesn't reduce the need for a chat-callable read tool.
+- [x] **~~`generate_subtitles` clip scoping~~ — done 2026-09-02.** No
+      explicit `clip_id` now falls back to the current selection before
+      the whole-project default, and the tool description pushes the
+      model to ask about scope when nothing's selected on a
+      multi-clip timeline rather than silently transcribing everything.
 - [ ] **Non-blocking audio export.** `exportZoneAudio()` renders
       synchronously on the GUI thread — a known, documented limitation
       that already caused a real "is this frozen?" moment on a ~74min
@@ -54,15 +55,36 @@ right section instead of a new file.
       (background thread + `QFutureWatcher`, or restructure as another
       chained async stage like the Whisper setup pipeline) now that it's
       caused actual confusion, not just a theoretical gap.
-- [ ] **Download the `turbo` Whisper model.** Only `tiny` is installed
-      right now (from setup verification); `turbo` is the documented
-      default and noticeably more accurate — `tiny` produced a garbled
-      fragment on a real transcription. Quick win once picked up again.
-- [ ] **Clean up vestigial speech config.** The now-unused
-      `speech_system_python`/`speech_system_python_path` entries in
-      `kdenliverc` (superseded by the vibecut-owned venv) and the manual
-      `~/.venvs/vibecut-whisper` test venv on the host — not urgent, not
-      yet decided whether to remove or leave as-is.
+- [x] **~~Download the `turbo` Whisper model~~ — done 2026-09-02.**
+      `large-v3-turbo.pt` downloaded (~1.6GB) via the same
+      `whisperquery.py task=download` path the app itself uses. Verified
+      live: subsequent `generate_subtitles` calls now use it
+      ("using the 'turbo' model on CUDA").
+- [x] **~~Clean up vestigial speech config~~ — checked 2026-09-02, not actually
+      vestigial, leave as-is.** `speech_system_python_path` in `kdenliverc`
+      and the `~/.venvs/vibecut-whisper` venv it points to aren't dead:
+      `src/pythoninterfaces/speechtotext.cpp` reads them for Kdenlive's own
+      *native* Speech-to-Text menu feature (Settings → Configure Kdenlive →
+      Speech to Text / the text-based editor), a completely separate code
+      path from vibecut's chat-panel tools. The venv is real and functional
+      (torch 2.13+cu130, whisper importable) - removing either would break
+      that unrelated, still-working feature for no reason.
+- [x] **~~Clip-move/gap-removal tool~~ — done 2026-09-02, today's "bigger
+      item."** New `timeline_close_gaps` tool. Surveyed the real subsystem
+      first (`TimelineFunctions`, a `struct` mostly-public-by-default,
+      documented in `KDENLIVE_INTERNALS.md`) rather than patching around
+      the absence of one - found `TimelineController::removeSpace()` is
+      another void-returning UI wrapper (same trap as `addEffectToClip()`)
+      around the real `bool`-returning `TimelineFunctions::
+      requestDeleteBlankAt()`. Gaps are self-detected (no reachable blank-
+      detection API - `TrackModel`'s is `protected`) by comparing sorted
+      clip positions per track, closed one at a time with fresh
+      re-detection after each (positions shift), `affectAllTracks=true`
+      first to keep AV-split pairs in sync with a per-track fallback if
+      that's too strict for the project's other tracks. Verified live:
+      "Closed 2 gaps on track 2 — one 57 frames at position 1172, another
+      90 frames at position 3928. No gaps remain," confirmed by the user
+      looking at the actual timeline, not just trusting the report.
 
 ## Multi-model backend — started 2026-09-01
 
