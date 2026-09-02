@@ -177,6 +177,25 @@ less-corrupted case) but isn't a real fix either.
       `layout_list`'s fixed 5. The static layout_list/layout_switch tools
       above are a real, useful stepping stone (same underlying save/
       restore mechanism) but this is the actual destination.
+      **Proposed shape, per the user (2026-09-02):**
+      1. First, actually work out how to construct a *correct* layout
+         file by hand - understand the real KDDockWidgets JSON format well
+         enough (item tree, `itemIndex`, `allDockWidgets`) to author one
+         that properly includes the vibecut dock, not reverse-engineer it
+         under pressure mid-bug like tonight.
+      2. Replace all of Kdenlive's default layouts with vibecut's own
+         versions once that's solid - every one authored with vibecut
+         actually accounted for, not retrofitted.
+      3. Give the agent a curated library of multiple known-good layouts
+         to pick from (broader than just the 5 originals), not only the
+         ability to generate new ones.
+      4. Let the agent *also* try generating novel layouts contextually
+         (the actual destination above) - but validate before committing:
+         if a generated layout doesn't render correctly, fall back to a
+         known-good one from the library rather than leaving the user
+         stuck. This is the safety net tonight's mitigations didn't have -
+         a *validated* escape hatch, not another unreliable recovery
+         attempt.
 
 ## Explicitly requested, not started
 
