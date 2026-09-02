@@ -531,3 +531,88 @@ still-queued subtitle-read tool than plain line search. It also keeps a
 specifically around removing filler words/dead space between takes,
 which is a real candidate answer to the still-open "what takes longest in
 a real editing session?" question.
+
+## 2026-09-02 — small fixes, one real bug class solved generally, one new subsystem
+
+Set up a dedicated `~/Videos/vibecut-projects/testclips.kdenlive` project
+today specifically for testing, instead of risking real footage — worth
+doing from the start of any session like this.
+
+Worked through the near-term TODO list: `timeline_list_clips` now returns
+each clip's real audio/video type (`PlaylistState::ClipState`) instead of
+making the model guess or find out the hard way from an `effect_apply`
+rejection; `generate_subtitles` now falls back to the current selection
+before defaulting to the whole project; downloaded the `turbo` Whisper
+model for real (`whisperquery.py task=download`, same path the app itself
+uses); investigated the "vestigial speech config" question from
+`TODO.md` and found it isn't vestigial at all — `speech_system_python_path`
+and its venv back Kdenlive's own *native* Speech-to-Text feature, a
+separate code path from vibecut's tools entirely, so left alone rather
+than breaking something unrelated for no reason.
+
+The user then live-tested the effect-parameter feature from yesterday
+against a real color-temperature request and caught it not actually
+working — the effect landed, but the value stayed at its built-in default
+every time, confirmed by pasting the real project XML rather than trusting
+the chat transcript. Two real bugs, found by reading Kdenlive's own source
+rather than guessing:
+
+1. An effect's real MLT parameter name isn't its display name -
+   "Temperature" is really `av.temperature`, not `temperature`. Fixed by
+   having `effect_search` return each effect's real parameter list
+   (`EffectsRepository::getXml()`) and validating `effect_apply`'s
+   `parameters` input against it, rejecting unknown names explicitly
+   (`parameters_unknown`) instead of the old check, which would silently
+   accept and "confirm" a wrong name because MLT stores and reads back an
+   arbitrary unknown property just fine.
+2. Deeper layer of the same bug, found on the very next live test: even
+   the *right* parameter name silently did nothing, because keyframable
+   parameter types need a `"start=value"` string (`"0=6500"`), not a bare
+   value - `setParameter("av.temperature", "4000")` round-trips through
+   `getParam()` unchanged (so it still looked confirmed) but MLT's
+   animation parser can't interpret the bare form and falls back to the
+   built-in default at render time.
+
+Rather than patch just `avfilter.colortemperature`, the user asked to
+survey the general problem before writing more code: found
+`AssetParameterModel::isAnimated(ParamType)` (`protected`, so reproduced
+by its XML type-string equivalents rather than called directly) is the
+real, complete list of which of the ~40 distinct MLT parameter types need
+this treatment — not just `animated`, also `color`, `colorwheel`, the
+various rect/point types, `roto-spline`. One general fix
+(`paramTypeNeedsKeyframePrefix()`), verified live across four genuinely
+different parameter types on three different effects (`animated` and
+`list` on `avgblur`, `color` and `bool` on `chromahold`) in the same
+session, not just re-testing the original colortemperature case.
+
+Also added AV-split awareness to the system prompt directly, per the
+user's request after watching the model narrate "6 clips" for what was
+really 3 pieces of footage each split into a video+audio pair —
+`timeline_list_clips`'s new `type` field plus an explicit system-prompt
+paragraph fixed it; confirmed live on the next test, correctly reporting
+"3 distinct pieces of footage."
+
+Closed out with the day's "bigger item," using the exact survey-first
+method the user had just asked for and both bug fixes above had already
+validated: a `timeline_close_gaps` tool. `TimelineController::
+removeSpace()` turned out to be another void-returning UI wrapper (same
+shape as `addEffectToClip()`) around a real `bool`-returning function,
+`TimelineFunctions::requestDeleteBlankAt()` — found by tracing the actual
+menu action (`slotRemoveSpace()`) rather than guessing at a plausible
+name. `TimelineFunctions` itself is a `struct` (public by default),
+documented as its own new section in `KDENLIVE_INTERNALS.md` alongside
+the parameter-format findings. Gap detection has no reachable API
+(`TrackModel::isBlankAt()` etc. are `protected`) so it's derived the same
+way a person reads the timeline — sorted clip positions per track, with
+fresh re-detection after each close since positions shift. First live
+test: "Closed 2 gaps on track 2 — one 57 frames at position 1172, another
+90 frames at position 3928. No gaps remain" — confirmed by the user
+looking at the real timeline, not just the report. User's own words:
+*"That approach to working with the program is the way to go. 100%
+success on the first go."*
+
+Also noticed and worth remembering: `pkill -x kdenlive` (SIGTERM) doesn't
+reliably kill a running test instance before a rebuild-and-relaunch
+script's next check, twice in one session — leaving a stale instance
+running alongside the new one on the same project file. `kill -9` on the
+specific PID has worked immediately both times; noted in `CLAUDE.md`.

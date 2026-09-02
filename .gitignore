@@ -31,4 +31,6 @@ kde-ci-reports/*
 /install.log
 /kdenlive-run.log
 /kdenlive-ollama-test.log
+/kdenlive-test.log
+/whisper-turbo-download.log
 /.vibecut-scratch/

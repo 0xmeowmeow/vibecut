@@ -5,6 +5,7 @@
 
 #include "vibecuttools.h"
 
+#include "assets/model/assetparametermodel.hpp"
 #include "bin/model/subtitlemodel.hpp"
 #include "core.h"
 #include "dialogs/subtitleedit.h"
@@ -12,6 +13,7 @@
 #include "effects/effectstack/model/effectstackmodel.hpp"
 #include "kdenlivesettings.h"
 #include "mainwindow.h"
+#include "timeline2/model/timelinefunctions.hpp"
 #include "timeline2/model/timelineitemmodel.hpp"
 #include "timeline2/model/timelinemodel.hpp"
 #include "timeline2/view/timelinecontroller.h"
@@ -24,8 +26,12 @@
 #include <KLocalizedString>
 
 #include <QDir>
+#include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
+#include <QSet>
+
+#include <algorithm>
 #include <QProcess>
 #include <QReadLocker>
 #include <QStandardPaths>
@@ -57,6 +63,25 @@ QJsonObject err(const QString &message)
     return QJsonObject{{QStringLiteral("ok"), false}, {QStringLiteral("error"), message}};
 }
 
+// Readable label for PlaylistState::ClipState (src/definitions.h). Exposed to
+// the model in timeline_list_clips so it has a grounded answer for "which
+// clip is audio vs. video" instead of guessing from clip names and finding
+// out the hard way from an effect_apply rejection - see the 2026-09-01
+// DEVLOG entry for the live mislabelling this caused.
+QString clipStateLabel(PlaylistState::ClipState state)
+{
+    switch (state) {
+    case PlaylistState::VideoOnly:
+        return QStringLiteral("video_only");
+    case PlaylistState::AudioOnly:
+        return QStringLiteral("audio_only");
+    case PlaylistState::Disabled:
+        return QStringLiteral("disabled");
+    default:
+        return QStringLiteral("av"); // has both video and audio (or type unknown)
+    }
+}
+
 TimelineController *currentController()
 {
     if (!pCore || !pCore->window()) {
@@ -82,6 +107,104 @@ TimelineWidget *currentTimelineWidget()
     }
     return pCore->window()->getCurrentTimeline();
 }
+
+// Real, settable parameter names for an effect, straight from its XML
+// definition - the same file Kdenlive's own effect-stack UI reads to build
+// its sliders. Found live 2026-09-02: an effect's *display* name ("Color
+// Temperature") is not its real MLT parameter key ("av.temperature", not
+// "temperature") - guessing from the display name silently sets nothing
+// (MLT just stores an unused property with the guessed name) while the
+// real parameter stays at its default. This is what closes that gap:
+// effect_search callers get the exact keys effect_apply's `parameters`
+// input needs, instead of guessing - and effect_apply itself validates
+// against this same list before writing anything (see toolApplyEffect).
+QJsonArray effectParameters(const QString &assetId)
+{
+    QJsonArray params;
+    const QDomElement xml = EffectsRepository::get()->getXml(assetId);
+    QDomNodeList nodes = xml.elementsByTagName(QStringLiteral("parameter"));
+    for (int i = 0; i < nodes.count(); ++i) {
+        const QDomElement p = nodes.at(i).toElement();
+        const QString type = p.attribute(QStringLiteral("type"));
+        // "fixed"/"widget"/"hidden"-ish decorative entries don't take a real
+        // value the way animated/constant/bool/list ones do - a name+default
+        // is the useful signal either way, so no need to be exhaustive here.
+        params.append(QJsonObject{{QStringLiteral("name"), p.attribute(QStringLiteral("name"))},
+                                  {QStringLiteral("type"), type},
+                                  {QStringLiteral("default"), p.attribute(QStringLiteral("default"))},
+                                  {QStringLiteral("min"), p.attribute(QStringLiteral("min"))},
+                                  {QStringLiteral("max"), p.attribute(QStringLiteral("max"))}});
+    }
+    return params;
+}
+
+// Whether an XML `type=` attribute needs the "start=value" keyframe-list
+// format rather than a bare value - a general version of the "0=6500, not
+// 6500" bug found live 2026-09-02 on avfilter.colortemperature's
+// type="animated" parameter. Rather than guess at which of the ~40 distinct
+// parameter types (`grep -ohE 'type="[a-zA-Z0-9_]+"' .../effects/*.xml`)
+// need this, this mirrors AssetParameterModel::isAnimated()'s own type list
+// exactly (src/assets/model/assetparametermodel.cpp) - that function and its
+// sibling getDefaultKeyframes() are `protected`, unreachable from here, so
+// this reproduces their effect via the XML type *strings* (which
+// paramTypeFromStr() maps to the enum values isAnimated() checks) instead of
+// the enum itself. Kept as one named list so the next person doesn't have to
+// re-derive it: KeyframeParam ("keyframe"/"animated"), AnimatedFakePoint,
+// AnimatedPoint, AnimatedRect ("animatedrect"/"rect"), AnimatedFakeRect,
+// ColorWheel, Roto_spline ("roto-spline"), and - somewhat surprisingly -
+// Color itself (plain "color" params are keyframable too in Kdenlive).
+bool paramTypeNeedsKeyframePrefix(const QString &xmlType)
+{
+    static const QSet<QString> kNeedsPrefix = {
+        QStringLiteral("keyframe"),          QStringLiteral("animated"),      QStringLiteral("animatedfakepoint"),
+        QStringLiteral("animatedpoint"),     QStringLiteral("animatedrect"),  QStringLiteral("rect"),
+        QStringLiteral("animatedfakerect"),  QStringLiteral("colorwheel"),    QStringLiteral("roto-spline"),
+        QStringLiteral("color"),
+    };
+    return kNeedsPrefix.contains(xmlType);
+}
+
+struct TimelineGap {
+    int trackId;
+    int startFrame;
+    int lengthFrames;
+};
+
+// Per-track gap detection, the same way a human reads the timeline: sort
+// each track's clips by position, and anywhere the next one doesn't start
+// right where the previous one ends, that's a gap. TrackModel's own
+// isBlankAt()/getBlankStart()/getBlankEnd() would be more direct but are
+// `protected` (see KDENLIVE_INTERNALS.md) - this is deliberately the more
+// primitive, always-reachable signal. Not deduplicated across an AV-split
+// pair's two tracks (they'll each report their own matching gap) -
+// requestDeleteBlankAt's affectAllTracks handles keeping them in sync.
+QVector<TimelineGap> findTimelineGaps(const std::shared_ptr<TimelineItemModel> &model, int onlyTrackId)
+{
+    QVector<TimelineGap> gaps;
+    for (int tid : model->getAllTracksIds()) {
+        if (onlyTrackId != -1 && tid != onlyTrackId) {
+            continue;
+        }
+        QVector<QPair<int, int>> spans; // start, end
+        for (int cid : model->getItemsInRange(tid, 0, -1, false)) {
+            if (!model->isClip(cid)) {
+                continue;
+            }
+            const int start = model->getClipPosition(cid);
+            spans.append({start, start + model->getClipPlaytime(cid)});
+        }
+        std::sort(spans.begin(), spans.end());
+        for (int i = 1; i < spans.size(); ++i) {
+            const int prevEnd = spans.at(i - 1).second;
+            const int nextStart = spans.at(i).first;
+            if (nextStart > prevEnd) {
+                gaps.append({tid, prevEnd, nextStart - prevEnd});
+            }
+        }
+    }
+    return gaps;
+}
+
 } // namespace
 
 VibeCutTools::VibeCutTools(QObject *parent)
@@ -178,6 +301,17 @@ QJsonArray VibeCutTools::schemas() const
               QJsonObject{{QStringLiteral("type"), QStringLiteral("integer")},
                           {QStringLiteral("description"),
                            QStringLiteral("Timeline clip id from timeline_list_clips. Omit to use the current selection.")}}},
+             {QStringLiteral("parameters"),
+              QJsonObject{{QStringLiteral("type"), QStringLiteral("object")},
+                          {QStringLiteral("description"),
+                           QStringLiteral("Optional MLT parameter name -> value to set on the effect right after "
+                                          "adding it (or on one already present). Use the exact names from "
+                                          "effect_search's `parameters` field for this effect id, not a guess from "
+                                          "its display name (e.g. 'av.temperature', not 'temperature' - a wrong "
+                                          "name is reported back as parameters_unknown, not applied). Values are "
+                                          "strings even for numeric params (MLT convention) - e.g. "
+                                          "{\"av.temperature\": \"4500\"}. Omit to add the effect with its default "
+                                          "parameters.")}}},
          }},
         {QStringLiteral("required"), QJsonArray{QStringLiteral("effect")}},
         {QStringLiteral("additionalProperties"), false}};
@@ -192,6 +326,16 @@ QJsonArray VibeCutTools::schemas() const
                                                   "(e.g. 'color', 'contrast', 'levels', 'crop'). Results are capped, "
                                                   "so narrow this rather than leaving it broad.")}}}}},
         {QStringLiteral("required"), QJsonArray{QStringLiteral("query")}},
+        {QStringLiteral("additionalProperties"), false}};
+
+    QJsonObject closeGapsSchema{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("properties"),
+         QJsonObject{{QStringLiteral("track_id"),
+                      QJsonObject{{QStringLiteral("type"), QStringLiteral("integer")},
+                                  {QStringLiteral("description"),
+                                   QStringLiteral("Only close gaps on this track id. Omit to close every gap on "
+                                                  "every track.")}}}}},
         {QStringLiteral("additionalProperties"), false}};
 
     QJsonObject askUserSchema{
@@ -221,8 +365,8 @@ QJsonArray VibeCutTools::schemas() const
              {QStringLiteral("clip_id"),
               QJsonObject{{QStringLiteral("type"), QStringLiteral("integer")},
                           {QStringLiteral("description"),
-                           QStringLiteral("Scope transcription to this clip's span on the timeline. Omit to "
-                                          "transcribe the whole project.")}}},
+                           QStringLiteral("Scope transcription to this clip's span on the timeline. Omit to use the "
+                                          "current selection if there is one, otherwise the whole project.")}}},
              {QStringLiteral("model"),
               QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
                           {QStringLiteral("description"),
@@ -235,7 +379,9 @@ QJsonArray VibeCutTools::schemas() const
         QJsonObject{{QStringLiteral("name"), QStringLiteral("timeline_list_clips")},
                     {QStringLiteral("description"),
                      QStringLiteral("List every clip on the active timeline with its stable id, name, track id, "
-                                    "start frame, duration in frames, and bin id.")},
+                                    "start frame, duration in frames, bin id, and type (\"video_only\", "
+                                    "\"audio_only\", \"av\", or \"disabled\") - use type to know which clips can "
+                                    "host an audio vs. video effect before calling effect_apply, not guesswork.")},
                     {QStringLiteral("input_schema"), noArgs}},
         QJsonObject{{QStringLiteral("name"), QStringLiteral("timeline_get_selection")},
                     {QStringLiteral("description"),
@@ -253,8 +399,20 @@ QJsonArray VibeCutTools::schemas() const
                      QStringLiteral("Search Kdenlive's real effect repository (the same list its own 'Add Effect' "
                                     "panel uses) by name/id substring. Use this to find the exact id to pass to "
                                     "effect_apply for anything beyond the 'denoise'/'denoise_light' aliases - color "
-                                    "correction, transforms, crop, speed, transitions, whatever the user asks for.")},
+                                    "correction, transforms, crop, speed, transitions, whatever the user asks for. "
+                                    "Each result includes its real parameter names/defaults/ranges - use those exact "
+                                    "names in effect_apply's `parameters`, not a guess from the display name (e.g. "
+                                    "Color Temperature's real key is 'av.temperature', not 'temperature' - setting "
+                                    "the wrong name silently does nothing, the effect stays at its default).")},
                     {QStringLiteral("input_schema"), effectSearchSchema}},
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("timeline_close_gaps")},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Close every gap between clips on the timeline (or on one track if track_id is "
+                                    "given), shifting later clips left so they touch. This is a real structural edit, "
+                                    "not just an effect - it changes clip positions. Reports exactly which gaps were "
+                                    "closed and which (if any) couldn't be, verified against the timeline's real "
+                                    "state afterward, not just whether the call errored.")},
+                    {QStringLiteral("input_schema"), closeGapsSchema}},
         QJsonObject{{QStringLiteral("name"), QStringLiteral("ask_user")},
                     {QStringLiteral("description"),
                      QStringLiteral("Ask the user a clarifying question when an answer would change which clip or "
@@ -279,8 +437,12 @@ QJsonArray VibeCutTools::schemas() const
                     {QStringLiteral("description"),
                      QStringLiteral("Transcribe audio with Whisper and add the result as a subtitle track. Requires "
                                     "speech_status to report a model installed first - call speech_setup otherwise. "
-                                    "Runs in the background and can take a while for long clips; returns immediately "
-                                    "once started, progress and the final result appear in the panel on their own.")},
+                                    "Scope defaults to the current selection if there is one, otherwise the whole "
+                                    "project - on a long timeline that can take minutes, so if nothing is selected "
+                                    "and the user didn't say 'the whole thing'/'everything', check timeline_list_clips "
+                                    "and ask which clip they mean rather than silently transcribing everything. Runs "
+                                    "in the background; returns immediately once started, progress and the final "
+                                    "result appear in the panel on their own.")},
                     {QStringLiteral("input_schema"), generateSubtitlesSchema}},
     };
 }
@@ -298,6 +460,9 @@ QJsonObject VibeCutTools::invoke(const QString &name, const QJsonObject &input)
     }
     if (name == QLatin1String("effect_search")) {
         return toolEffectSearch(input);
+    }
+    if (name == QLatin1String("timeline_close_gaps")) {
+        return toolCloseGaps(input);
     }
     if (name == QLatin1String("ask_user")) {
         return toolAskUser(input);
@@ -333,6 +498,7 @@ QJsonObject VibeCutTools::toolListClips()
                 {QStringLiteral("position"), model->getClipPosition(cid)},
                 {QStringLiteral("duration"), model->getClipPlaytime(cid)},
                 {QStringLiteral("bin_id"), model->getClipBinId(cid)},
+                {QStringLiteral("type"), clipStateLabel(model->getClipState(cid).first)},
             });
         }
     }
@@ -392,12 +558,87 @@ QJsonObject VibeCutTools::toolApplyEffect(const QJsonObject &input)
     if (!stack) {
         return err(QStringLiteral("Clip %1 has no effect stack.").arg(clipId));
     }
+
+    // Setting parameters (added an effect but couldn't configure it: a real
+    // gap found live 2026-09-01 - avfilter.colorlevels/colorcorrect landed
+    // at their identity defaults and visibly did nothing). Applies to either
+    // path below (already present, or freshly added): the caller may want to
+    // (re)tune an effect that's already on the stack just as much as a new
+    // one. Verified per-parameter by reading the value straight back from
+    // the asset model, not just trusting setParameter() didn't throw.
+    auto applyParameters = [&stack, &assetId](const QJsonObject &params) {
+        QJsonObject confirmedParams;
+        QJsonArray failedParams;
+        QJsonArray unknownParams;
+        if (params.isEmpty()) {
+            return QJsonObject{{QStringLiteral("parameters_set"), confirmedParams}};
+        }
+        // Validate names against the effect's real XML parameter list before
+        // writing anything - reading a value straight back after
+        // setParameter() (the original check here) is NOT sufficient proof
+        // it worked: MLT will happily store an arbitrary unknown property
+        // name and read it back unchanged, which made a *wrong* guessed name
+        // look like a confirmed success. Found live 2026-09-02: "temperature"
+        // isn't a real parameter of avfilter.colortemperature ("av.temperature"
+        // is) - the old check would have reported that as applied.
+        QMap<QString, QString> realTypes; // name -> XML "type" attribute
+        for (const QJsonValue &pv : effectParameters(assetId)) {
+            const QJsonObject p = pv.toObject();
+            realTypes.insert(p.value(QStringLiteral("name")).toString(), p.value(QStringLiteral("type")).toString());
+        }
+        std::shared_ptr<AssetParameterModel> asset = stack->getAssetModelById(assetId);
+        for (auto it = params.begin(); it != params.end(); ++it) {
+            if (!realTypes.contains(it.key())) {
+                unknownParams.append(it.key());
+                continue;
+            }
+            QString value = it.value().toVariant().toString();
+            // Keyframable parameter types store a "start=value" list, not a
+            // bare value - every untouched default in the project XML looks
+            // like "0=6500", never plain "6500". Found live 2026-09-02:
+            // writing a bare value round-trips fine through getParam() (so
+            // the old verification here reported it as confirmed) but MLT's
+            // animation parser can't interpret it and silently falls back to
+            // the built-in default at render time. General fix, not just for
+            // "animated": paramTypeNeedsKeyframePrefix() mirrors
+            // AssetParameterModel::isAnimated()'s exact type list. Frame 0 =
+            // constant-across-the-clip in Kdenlive's own convention.
+            if (paramTypeNeedsKeyframePrefix(realTypes.value(it.key())) && !value.contains(QLatin1Char('='))) {
+                value = QStringLiteral("0=") + value;
+            }
+            if (!asset) {
+                failedParams.append(it.key());
+                continue;
+            }
+            asset->setParameter(it.key(), value);
+            if (asset->getParam(it.key()) == value) {
+                confirmedParams.insert(it.key(), value);
+            } else {
+                failedParams.append(it.key());
+            }
+        }
+        QJsonObject result{{QStringLiteral("parameters_set"), confirmedParams}};
+        if (!failedParams.isEmpty()) {
+            result.insert(QStringLiteral("parameters_failed"), failedParams);
+        }
+        if (!unknownParams.isEmpty()) {
+            result.insert(QStringLiteral("parameters_unknown"), unknownParams);
+            result.insert(QStringLiteral("real_parameter_names"), QJsonArray::fromStringList(realTypes.keys()));
+        }
+        return result;
+    };
+    const QJsonObject paramResult = applyParameters(input.value(QStringLiteral("parameters")).toObject());
+
     if (stack->hasFilter(assetId)) {
-        return QJsonObject{{QStringLiteral("ok"), true},
+        QJsonObject result{{QStringLiteral("ok"), true},
                            {QStringLiteral("applied"), key},
                            {QStringLiteral("asset_id"), assetId},
                            {QStringLiteral("clip_id"), clipId},
                            {QStringLiteral("already_present"), true}};
+        for (auto it = paramResult.begin(); it != paramResult.end(); ++it) {
+            result.insert(it.key(), it.value());
+        }
+        return result;
     }
 
     // addEffectToClip() itself returns void, so it cannot tell us whether
@@ -414,12 +655,21 @@ QJsonObject VibeCutTools::toolApplyEffect(const QJsonObject &input)
                        .arg(key)
                        .arg(clipId));
     }
-    return QJsonObject{{QStringLiteral("ok"), true},
+    // Parameters (if any were requested) must be applied *after* the effect
+    // actually exists on the stack - re-run now that it does, rather than
+    // relying on the pre-add attempt above (which would have found no asset
+    // model yet and reported every parameter as failed).
+    const QJsonObject postAddParamResult = applyParameters(input.value(QStringLiteral("parameters")).toObject());
+    QJsonObject finalResult{{QStringLiteral("ok"), true},
                        {QStringLiteral("applied"), key},
                        {QStringLiteral("asset_id"), assetId},
                        {QStringLiteral("clip_id"), clipId},
                        {QStringLiteral("already_present"), false},
                        {QStringLiteral("effect_count_on_clip"), stack->rowCount()}};
+    for (auto it = postAddParamResult.begin(); it != postAddParamResult.end(); ++it) {
+        finalResult.insert(it.key(), it.value());
+    }
+    return finalResult;
 }
 
 QJsonObject VibeCutTools::toolEffectSearch(const QJsonObject &input)
@@ -439,7 +689,8 @@ QJsonObject VibeCutTools::toolEffectSearch(const QJsonObject &input)
         if (id.contains(query, Qt::CaseInsensitive) || displayName.contains(query, Qt::CaseInsensitive)) {
             results.append(QJsonObject{{QStringLiteral("id"), id},
                                        {QStringLiteral("name"), displayName},
-                                       {QStringLiteral("is_audio"), EffectsRepository::get()->isAudioEffect(id)}});
+                                       {QStringLiteral("is_audio"), EffectsRepository::get()->isAudioEffect(id)},
+                                       {QStringLiteral("parameters"), effectParameters(id)}});
             if (results.size() >= kMaxResults) {
                 break;
             }
@@ -450,6 +701,70 @@ QJsonObject VibeCutTools::toolEffectSearch(const QJsonObject &input)
                        {QStringLiteral("count"), results.size()},
                        {QStringLiteral("truncated"), results.size() >= kMaxResults},
                        {QStringLiteral("effects"), results}};
+}
+
+QJsonObject VibeCutTools::toolCloseGaps(const QJsonObject &input)
+{
+    std::shared_ptr<TimelineItemModel> model = currentModel();
+    if (!model) {
+        return err(QStringLiteral("No timeline is open."));
+    }
+    const int onlyTrackId = input.contains(QStringLiteral("track_id")) ? input.value(QStringLiteral("track_id")).toInt(-1) : -1;
+
+    QJsonArray closedGaps;
+    QJsonArray failedGaps;
+    QSet<qint64> stuck; // (trackId, startFrame) pairs already confirmed unclosable this call
+
+    // Bounded, not unbounded: a real project has a finite number of gaps: this
+    // just guards against looping forever if something we haven't foreseen
+    // keeps reporting a "new" gap at the same spot after a "successful" close.
+    constexpr int kMaxIterations = 500;
+    for (int iteration = 0; iteration < kMaxIterations; ++iteration) {
+        // Closing a gap shifts every later clip left, so gaps found in a
+        // previous iteration may already be stale - re-derive fresh each
+        // time rather than computing the whole list once upfront (see
+        // KDENLIVE_INTERNALS.md).
+        QVector<TimelineGap> gaps = findTimelineGaps(model, onlyTrackId);
+        QVector<TimelineGap> candidates;
+        for (const TimelineGap &g : gaps) {
+            if (!stuck.contains((qint64(g.trackId) << 32) | quint32(g.startFrame))) {
+                candidates.append(g);
+            }
+        }
+        if (candidates.isEmpty()) {
+            break;
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const TimelineGap &a, const TimelineGap &b) { return a.startFrame < b.startFrame; });
+        const TimelineGap gap = candidates.first();
+
+        // affectAllTracks=true is the one that keeps an AV-split video/audio
+        // pair in sync (their gap shares position by construction), but it
+        // requires *every* unlocked track to have a blank at that exact
+        // position - it can legitimately fail on a project with other
+        // unrelated tracks that don't. Fall back to closing it on just this
+        // one track rather than giving up on the whole gap.
+        bool closed = TimelineFunctions::requestDeleteBlankAt(model, gap.trackId, gap.startFrame, true);
+        if (!closed) {
+            closed = TimelineFunctions::requestDeleteBlankAt(model, gap.trackId, gap.startFrame, false);
+        }
+        QJsonObject gapJson{{QStringLiteral("track_id"), gap.trackId},
+                            {QStringLiteral("start_frame"), gap.startFrame},
+                            {QStringLiteral("length_frames"), gap.lengthFrames}};
+        if (closed) {
+            closedGaps.append(gapJson);
+        } else {
+            failedGaps.append(gapJson);
+            stuck.insert((qint64(gap.trackId) << 32) | quint32(gap.startFrame));
+        }
+    }
+
+    // Verify against real state, not our own loop bookkeeping - re-derive
+    // gaps one final time rather than trusting the closedGaps count.
+    const int remaining = findTimelineGaps(model, onlyTrackId).size();
+    return QJsonObject{{QStringLiteral("ok"), true},
+                       {QStringLiteral("closed"), closedGaps},
+                       {QStringLiteral("failed"), failedGaps},
+                       {QStringLiteral("gaps_remaining"), remaining}};
 }
 
 QJsonObject VibeCutTools::toolAskUser(const QJsonObject &input)
@@ -867,13 +1182,28 @@ QJsonObject VibeCutTools::toolGenerateSubtitles(const QJsonObject &input)
 
     int zoneIn = 0;
     int zoneOut = model->duration();
+    int scopedClipId = -1;
     if (input.contains(QStringLiteral("clip_id"))) {
-        const int clipId = input.value(QStringLiteral("clip_id")).toInt(-1);
-        if (!model->isClip(clipId)) {
-            return err(QStringLiteral("Clip id %1 does not exist on the timeline.").arg(clipId));
+        scopedClipId = input.value(QStringLiteral("clip_id")).toInt(-1);
+        if (!model->isClip(scopedClipId)) {
+            return err(QStringLiteral("Clip id %1 does not exist on the timeline.").arg(scopedClipId));
         }
-        zoneIn = model->getClipPosition(clipId);
-        zoneOut = zoneIn + model->getClipPlaytime(clipId);
+    } else {
+        // No explicit clip_id: honour a real timeline selection instead of
+        // silently defaulting to the whole project (an unhelpful, slow
+        // surprise on a long timeline - see DEVLOG 2026-08-31). Unlike
+        // effect_apply, "whole project" is a legitimate outcome here when
+        // nothing is selected, so this doesn't use resolveTargetClip()'s
+        // single-candidate/ambiguity-error behaviour - it only follows a
+        // selection that's actually there.
+        const int selected = selectedClipId();
+        if (selected != -1) {
+            scopedClipId = selected;
+        }
+    }
+    if (scopedClipId != -1) {
+        zoneIn = model->getClipPosition(scopedClipId);
+        zoneOut = zoneIn + model->getClipPlaytime(scopedClipId);
     }
     if (zoneOut <= zoneIn) {
         return err(QStringLiteral("Nothing to transcribe (empty zone)."));

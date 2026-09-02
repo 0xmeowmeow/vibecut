@@ -69,6 +69,7 @@ private:
     QJsonObject toolGetSelection();
     QJsonObject toolApplyEffect(const QJsonObject &input);
     QJsonObject toolEffectSearch(const QJsonObject &input);
+    QJsonObject toolCloseGaps(const QJsonObject &input);
     QJsonObject toolAskUser(const QJsonObject &input);
     QJsonObject toolSpeechStatus();
     QJsonObject toolSpeechSetup(const QJsonObject &input);

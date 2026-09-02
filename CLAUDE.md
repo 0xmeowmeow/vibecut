@@ -96,6 +96,14 @@ installed on this machine.
    Flatpak's branch resolution. If this breaks something later, that's
    where to look first.
 
+**Killing a running test instance before a rebuild**: use
+`kill -9 <pid>` on the specific PID (from `pgrep -x kdenlive`), not
+`pkill -x kdenlive`. Found live 2026-09-02, twice in a row: plain
+`pkill -x kdenlive` (SIGTERM) doesn't reliably kill it within the ~1s a
+script typically waits before relaunching, leaving a stale instance
+running alongside the new one on the same project file. `kill -9`
+(SIGKILL) on the exact PID has worked immediately both times.
+
 **If you're starting a fresh session and the build already ran**: check
 `~/data/programming/vibecut/build.log` and `ps -ef | grep flatpak-builder`
 before starting a new one — it was last launched fully detached
