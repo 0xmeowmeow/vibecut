@@ -225,7 +225,7 @@ For this VibeCut fork, use the pinned [reproducible Windows build](windows-build
 
 It is well suited for quickly setting up a working build environment or creating distributable packages. However, manual builds are generally preferred for active development workflows, debugging and dependency customization.
 
-1. Set up Craft as described [here](https://community.kde.org/Craft#Setting_up_Craft). (On Windows choose MinGW as compiler!)
+1. Set up Craft as described [here](https://community.kde.org/Craft#Setting_up_Craft). (This MinGW-based path is separate from the pinned MSVC 2022 Windows build above - only follow it if you specifically want a from-scratch, unpinned Craft build rather than the reproducible one.)
 2. Start building kdenlive. You can simply run `craft --option kdenlive.version=master kdenlive`
 3. Within the craft environment running Kdenlive is as simple as `kdenlive`
 

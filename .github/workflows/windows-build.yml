@@ -2,6 +2,11 @@ name: VibeCut Windows Build
 
 on:
   pull_request:
+    paths-ignore:
+      - "dev-docs/**"
+      - "doc/**"
+      - "LICENSES/**"
+      - "**.md"
   push:
     branches:
       - vibecut
@@ -28,7 +33,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: vibecut-windows-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # inputs.source_ref is only set when called via workflow_call (from
+  # windows-release.yml) - github.workflow/github.ref inside a called
+  # workflow reflect the *caller's* context, not the source_ref actually
+  # being built, so every windows-release.yml dispatch from the same
+  # caller context collided on one group and cancelled each other's
+  # in-flight ~4-hour build. Falls back to the pre-existing PR/ref-based
+  # key for direct pull_request/push/workflow_dispatch triggers, where
+  # source_ref is empty.
+  group: vibecut-windows-${{ inputs.source_ref || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

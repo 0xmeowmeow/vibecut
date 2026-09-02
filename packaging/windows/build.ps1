@@ -401,6 +401,7 @@ $savedEnvironment = @{
     AndroidNdk = $env:ANDROID_NDK
 }
 $savedLocation = Get-Location
+$craftSourceDirectory = $null
 
 try {
     # GitHub's Windows runner exposes Android tooling globally. Craft's bootstrap
@@ -429,7 +430,12 @@ try {
         if (Test-Path -LiteralPath $CraftRoot) {
             $unexpectedEntries = @(Get-ChildItem -LiteralPath $CraftRoot -Force)
             if ($unexpectedEntries.Count -gt 0) {
-                throw "$CraftRoot is not an empty Craft root. Choose a new -CraftRoot instead of mixing build environments."
+                throw "$CraftRoot is not an empty Craft root. If this is left over from an earlier failed bootstrap " +
+                    "(network blip, disk pressure, an interrupted run) rather than an unrelated directory, delete " +
+                    "$CraftRoot itself and re-run - it is safe to remove entirely and will be recreated from " +
+                    "scratch. Do not delete -DownloadDirectory ($DownloadDirectory): it is a separate, reusable " +
+                    "package cache junctioned into $CraftRoot\download, not part of the Craft root itself. " +
+                    "Otherwise, choose a new -CraftRoot instead of mixing build environments."
             }
         }
 
@@ -521,13 +527,25 @@ try {
         Invoke-Checked $gitCommand.Source '-C' $blueprintDirectory 'checkout' '--detach' $KdeBlueprintCommit
     }
 
-    # SourceForge occasionally truncates this archive on GitHub-hosted runners.
-    # Seed the same tagged source from libpng's official GitHub repository and
-    # verify it before Craft starts resolving the Kdenlive dependency graph.
-    if ($DownloadDirectory) {
-        $libPngArchive = Join-Path $DownloadDirectory 'archives\libs\libpng\libpng-1.6.45.tar.gz'
-        Save-VerifiedDownload $LibPngArchiveUrl $libPngArchive $LibPngArchiveSha256
+    # SourceForge occasionally truncates this archive - seen on GitHub-hosted
+    # runners, but the truncation itself is a SourceForge/network property,
+    # not something specific to CI. Was gated on -DownloadDirectory being
+    # passed, which only accidentally matched "is this CI" (windows-build.yml
+    # always passes it) - a plain local build (the documented no-argument
+    # invocation) got none of this protection, and anyone reusing
+    # -DownloadDirectory purely for its documented caching purpose got a
+    # GH-specific workaround unrelated to their situation. Seed the same
+    # tagged source from libpng's official GitHub repository and verify it
+    # before Craft starts resolving the Kdenlive dependency graph,
+    # unconditionally - Craft's own download location is always
+    # $CraftRoot\download, whether or not it's junctioned to an external
+    # -DownloadDirectory cache.
+    $libPngDownloadRoot = $DownloadDirectory
+    if (-not $libPngDownloadRoot) {
+        $libPngDownloadRoot = Join-Path $CraftRoot 'download'
     }
+    $libPngArchive = Join-Path $libPngDownloadRoot 'archives\libs\libpng\libpng-1.6.45.tar.gz'
+    Save-VerifiedDownload $LibPngArchiveUrl $libPngArchive $LibPngArchiveSha256
 
     $sourceOption = 'kdenlive.srcDir=' + $sourceRoot.Replace('\', '/')
     $commonCraftArguments = @(
@@ -589,4 +607,7 @@ finally {
     $env:CRAFT_PYTHON = $savedEnvironment.CraftPython
     $env:ANDROID_SDK_ROOT = $savedEnvironment.AndroidSdkRoot
     $env:ANDROID_NDK = $savedEnvironment.AndroidNdk
+    if ($craftSourceDirectory -and (Test-Path -LiteralPath $craftSourceDirectory)) {
+        Remove-Item -LiteralPath $craftSourceDirectory -Recurse -Force
+    }
 }
