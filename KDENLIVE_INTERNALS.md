@@ -406,6 +406,54 @@ as the Whisper scripts lookup.
   debugging (dragging edges, reading KDDockWidgets' own separator/
   multisplitter placement logic for an item with no saved position), not
   another guess-and-rebuild cycle.
+- **The actual layout JSON format** (learned 2026-09-03, doing the "work
+  out how to construct one properly" step for real): top-level keys are
+  `kdenliveInfo`, `allDockWidgets`, `closedDockWidgets`, `floatingWindows`,
+  `mainWindows`, `screenInfo`, `serializationVersion`. The real geometry
+  lives in `mainWindows[0].multiSplitterLayout`, which has two parts:
+  - `frames`: a dict keyed by a numeric **frame id** (a string like
+    `"13862"`, unrelated to any dock's own name). Each frame is a *tab
+    group* - `dockWidgets` is a list of dock unique names sharing that
+    one frame (e.g. `["mixer", "effect_stack", "timeremap", "subtitles"]`
+    really are four tabs of one frame in the real `editing.json`), plus
+    `geometry`, `currentTabIndex`, `mainWindowUniqueName`.
+  - `layout`: the actual nested split tree (`children`, `orientation`,
+    `sizingInfo` per node). A leaf node's `guestId` is the frame id it
+    displays; container nodes recurse.
+  Separately, `allDockWidgets` is bookkeeping, not the primary geometry
+  source - each entry's `lastPosition.placeholders[0].itemIndex` is
+  **shared by every dock tabbed in the same frame** (confirmed: `mixer`,
+  `effect_stack`, and `subtitles` in real `editing.json` all carry the
+  same `itemIndex: 12`, distinct from any frame's own numeric id) -
+  `tabIndex` is what actually orders them within that shared tab group.
+  **The lowest-risk way to add a dock to an existing layout**: append its
+  unique name to an existing frame's `dockWidgets` list (tabbing it in
+  alongside whatever's already there) rather than constructing a new
+  `layout` tree branch by hand - no sizing/orientation math needed, and
+  it's exactly what a real, working example (`vibecut` tabbed into the
+  `mixer` frame, tested live) confirmed working.
+- **Kdenlive's own layout switcher UI only shows 5 layouts, no matter how
+  many exist**: `LayoutManagement::initializeLayouts()` hardcodes
+  `int maxSwitcher = 5`, so anything beyond the first 5 entries of
+  `KdenliveSettings::layoutsOrder()` never appears in the visible tab row
+  - a custom layout being invisible there doesn't mean it wasn't found.
+  The **View → Load Layout** menu (`m_loadLayout`, action name
+  `load_layouts`) is fed from the *full* `allLayouts` list with no cap -
+  that's the real way to reach a custom layout, not the tab row.
+- **Once KDDockWidgets has seen a dock positioned in any one loaded
+  layout, its fallback behaviour for *other* layouts that don't mention
+  it seems to improve** - confirmed live 2026-09-03: before loading the
+  hand-built `vibecut_test.json` (vibecut tabbed into `mixer`, see above),
+  every built-in layout corrupted the panel (full-window-stretched
+  container, text scattered in corners - see the earlier bullet). After
+  loading `vibecut_test.json` once, switching between the *original*
+  built-in tabs (Logging/Editing/Audio/Effects/Color, all checked by
+  hand) left vibecut **floating cleanly** every time instead - a real,
+  visually-confirmed improvement, not a guess. Not fully understood why
+  (not yet dug into KDDockWidgets' own source for the mechanism), but
+  reproducible. Floating isn't full page-appropriate positioning, but
+  it's a usable panel instead of a lockout - worth reconsidering whether
+  `layout_switch` can be reintroduced with this as the fallback baseline.
 
 ## Flatpak build system
 

@@ -157,6 +157,32 @@ less-corrupted case) but isn't a real fix either.
       the `layout_switch` removal are damage control, not a fix. User's
       call: *"There is no easy solution: we are going to have to just
       work it out and fix it, if not tonight, then tomorrow."*
+
+      **Update 2026-09-03 - real progress.** Built a test custom layout
+      (`~/.var/app/org.kde.kdenlive/data/kdenlive/layouts/vibecut_test.json`,
+      a copy of `editing.json` with `"vibecut"` added to the `mixer`
+      frame's `dockWidgets` tab list and a matching `allDockWidgets` entry
+      - see `KDENLIVE_INTERNALS.md` for the exact JSON shape: `frames` is
+      a dict keyed by numeric frame id, each with a `dockWidgets` tab
+      list; `allDockWidgets`' `itemIndex` is shared by every dock tabbed
+      in the same frame, not the frame's own id). Loaded live via
+      Kdenlive's own **View → Load Layout** menu (the switcher tab row is
+      hardcoded to the first 5 layouts only -
+      `LayoutManagement::initializeLayouts()`, `int maxSwitcher = 5` - so
+      a custom layout never appears there; Load Layout shows all of them).
+      After loading it once, switching between the *original* built-in
+      tabs (Logging, Editing, Audio, Effects, Color all confirmed by hand)
+      now leaves vibecut **floating cleanly** every time, not corrupted -
+      a real, verified improvement over the "broken in every layout"
+      state above. Working theory: KDDockWidgets only produces the
+      corrupted fallback for a dock it has *never* seen positioned in any
+      loaded layout; once it's appeared in one real layout file, later
+      switches to layouts that still don't mention it fall back to
+      floating (fully usable) instead. Floating isn't the end goal (still
+      not "positioned sensibly per page"), but it turns "unusable lockout"
+      into "acceptable degradation" - worth re-evaluating whether
+      `layout_switch` can come back with this as the baseline, once
+      confirmed more.
 - [ ] **Position the vibecut dock sensibly in every built-in layout**, if
       still worth doing once the item below exists - a DaVinci-Resolve-
       page-style "this panel always sits here on the Color page" needs one
