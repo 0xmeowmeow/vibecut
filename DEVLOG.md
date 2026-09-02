@@ -616,3 +616,19 @@ reliably kill a running test instance before a rebuild-and-relaunch
 script's next check, twice in one session — leaving a stale instance
 running alongside the new one on the same project file. `kill -9` on the
 specific PID has worked immediately both times; noted in `CLAUDE.md`.
+
+Asked to stress-test the parameter-value fix further to confirm it really
+was solved generally rather than just for the cases already hit: two more
+live requests, `frei0r.contrast0r`/`frei0r.saturat0r` (`constant` type,
+the single most common parameter type in the whole effect set at ~756
+occurrences, but not one actually *set* via `effect_apply` until now) and
+`lift_gamma_gain` (`colorwheel` type, a native MLT filter rather than an
+avfilter wrapper). Both landed correctly. The user caught something worth
+double-checking rather than assuming success — the effect stack UI showed
+"650" and "700" for values requested as `1.3` and `0.7` — which turned
+out to be neither a bug nor a coincidence: both effects have a `factor=`
+XML attribute (`500` and `1000` respectively) that Kdenlive's own UI
+multiplies the raw stored value by for its slider display, confirmed by
+the exact arithmetic matching (`1.3 × 500 = 650`, `0.7 × 1000 = 700`).
+Recorded in `KDENLIVE_INTERNALS.md` so a future "that number looks wrong"
+moment gets checked against `factor=` before assuming a real bug.

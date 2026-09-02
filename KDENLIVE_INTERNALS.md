@@ -81,6 +81,22 @@ that's the payoff, not a one-time exhaustive pass.
     configured default interpolation (`=`/`|=`/`~=`) - also `protected`;
     vibecut's own version just always uses linear `=`, which is what
     every observed default in real project files uses.
+- **Some parameters display a `factor=`-scaled number in the UI, not the
+  raw stored value** - e.g. `frei0r.contrast0r`'s `Contrast`
+  (`default="0.5" factor="500"`) and `frei0r.saturat0r`'s `Saturation`
+  (`default="0.125" factor="1000"`). Confirmed live 2026-09-02: setting
+  `Contrast` to `1.3` via `effect_apply` shows as **650** in Kdenlive's
+  effect stack (`1.3 × 500`), and `Saturation` to `0.7` shows as **700**
+  (`0.7 × 1000`) - not a bug, that's the UI's own slider convention (same
+  number a human dragging that exact position would see). If a value
+  looks "wrong" by a clean multiple in the stack UI, check the XML's
+  `factor=` attribute before assuming the write failed - also seen on
+  `lift_gamma_gain`'s colorwheel params (`factor="100"`). Also worth
+  noting: frei0r-native effects (`Contrast`, `Saturation`) and native MLT
+  filters (`lift_gamma_gain`'s `gain_b` etc.) don't use the `av.` prefix
+  convention at all - that's specific to avfilter-wrapped effects. One
+  more reason real names have to come from `effect_search`/`getXml()`,
+  never a guessed convention.
 
 ## Timeline structural editing (move/trim/cut/gaps)
 
