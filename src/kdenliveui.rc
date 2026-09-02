@@ -381,6 +381,7 @@
   <ToolBar name="extraToolBar">
     <text>Extra Toolbar</text>
     <Action name="project_render_button"/>
+    <Action name="show_vibecut"/>
   </ToolBar>
   <!-- keep this for compatibility with Kdenlive < 25.08.3 -->
   <Menu name="marker_menu" />

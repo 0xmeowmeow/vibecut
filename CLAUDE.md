@@ -104,6 +104,20 @@ script typically waits before relaunching, leaving a stale instance
 running alongside the new one on the same project file. `kill -9`
 (SIGKILL) on the exact PID has worked immediately both times.
 
+**Waiting for a build to finish**: use `pgrep -x flatpak-builder` (exact
+process name), never `pgrep -f "flatpak-builder --user --force-clean ..."`
+(full command line), in a polling loop like `until ! pgrep ... > /dev/null;
+do sleep N; done`. Found live 2026-09-02, the expensive way: every Bash
+tool call runs inside a wrapper shell whose own command line is an `eval
+'...'` string containing the literal text of the command being run - a
+`pgrep -f` pattern copied from the command being waited on matches that
+wrapper's own command line, so the loop finds "a match" (itself) forever,
+even after the real build finished. This silently produced **seventeen**
+zombie wait loops across one session, none of which ever fired their
+completion notification - always fell back to directly polling
+`build*.log`/`pgrep -x flatpak-builder` instead of trusting the loop, which
+is exactly why: use `-x`, not `-f`, for "is this program still running."
+
 **If you're starting a fresh session and the build already ran**: check
 `~/data/programming/vibecut/build.log` and `ps -ef | grep flatpak-builder`
 before starting a new one — it was last launched fully detached

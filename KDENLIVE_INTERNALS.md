@@ -318,6 +318,95 @@ initialization-order issue). This is exactly the kind of unreliability
 that motivated dropping the whole state machine rather than chasing it
 further.
 
+## UI layouts (`src/layouts/`)
+
+Kdenlive already ships DaVinci-Resolve-style workflow "pages" - not
+something to build from scratch, just to expose. Real default layout ids,
+confirmed live 2026-09-02 by listing `/app/share/kdenlive/layouts/*.json`:
+`logging`, `editing` (+ `editing_vertical`, a vertical-monitor variant),
+`audio`, `effects`, `color` - the exact order `KdenliveSettings::
+layoutsOrder()`'s kcfg default uses (`logging,editing,audio,effects,color`).
+Custom/user-saved layouts live alongside them via `QStandardPaths::
+locateAll(AppLocalDataLocation, "layouts", LocateDirectory)`, same pattern
+as the Whisper scripts lookup.
+
+- **Triggering a switch**: `Core::loadLayoutById(QString layoutId, bool
+  onlyIfNoPrevious = false)` (`core.h`) is a plain signal - and `Q_SIGNALS:`
+  with no qualifier expands to `public` in Qt, so it's directly callable
+  as `pCore->loadLayoutById(id)` from any code holding `pCore`, no
+  `Q_EMIT` needed (that macro is a no-op marker). `mainwindow.cpp` wires
+  it `Qt::DirectConnection` to `LayoutManagement::slotLoadLayoutById()`,
+  so the switch has already happened synchronously by the time the call
+  returns.
+- **No reachable enumeration API**: `LayoutCollection` (the class with the
+  real `getAllLayouts()`/`getLayout()`/`hasLayout()` methods) is a private
+  member (`m_layoutCollection`) of `LayoutManagement`, which `MainWindow`
+  itself doesn't expose either - no `pCore`/`MainWindow` accessor reaches
+  it. Enumerate layouts the same way `LayoutCollection::loadLayouts()`
+  does internally: find `*.json` files in the `layouts` dirs via
+  `QStandardPaths::locateAll`, ids from the filename (`QFileInfo::
+  baseName()`), cross-reference `KdenliveSettings::
+  defaultLayoutsOrderValue()` to know which are built-in.
+- **No verification hook for a completed switch**: unlike
+  `slotLoadLayoutById()`'s own `bool` return (lost here since we can only
+  reach it through the `void` signal, not the method), there's no
+  "current layout id" setting to check afterward - `KdenliveSettings::
+  kdockLayout` is the full serialized KDDockWidgets layout blob, only
+  written on app close (`mainwindow.cpp` ~line 1119), not live-updated per
+  switch. Validate the requested id exists *before* calling (catches a bad
+  id) rather than claiming a confirmed-after-the-fact success this tool
+  can't actually back up - report started/attempted, not verified, and say
+  so plainly rather than dressing it up as the same confidence level as
+  the effect/timeline tools.
+- **The `"vibecut"` dock itself isn't in any built-in layout's saved
+  file** (they all predate it) - confirmed live 2026-09-02, switching to
+  one left our own dock's fate up to KDDockWidgets' undefined
+  fallback-placement behaviour for an unlisted dock. Real symptoms seen,
+  in order: wiped the visible chat on one switch; left the panel mis-sized
+  on another; then, checking the actual saved layout file
+  (`color.json`'s `allDockWidgets` list, each entry with a real
+  `itemIndex` into the layout tree), found it's not random corruption -
+  the unlisted dock lands **overlapping another dock's real saved slot**
+  (the Waveform scope's, on the Color layout), with a corrupted
+  full-window-sized container whose child widgets (header label, input
+  row) keep their own small fixed-position layout, scattering text
+  fragments across the corners of the oversized frame.
+  Two mitigations tried, in order, both ultimately insufficient:
+  1. **Float the dock out of the restore's way.** `Core::DockWidget::
+     setFloating(bool)` (`core/DockWidget.h`) returns a real `bool`, but
+     our actual member is `KDDockWidgets::QtWidgets::DockWidget*`, which
+     resolves `setFloating` to `DockWidgetViewInterface`'s `void` overload
+     instead (`core/views/DockWidgetViewInterface.h`) - same shape as
+     `removeSpace()`/`addEffectToClip()` before it, worked around the same
+     way (call as `void`, verify via a separate `isFloating()` read-back,
+     which *is* `bool` on both interfaces). Needed exposing the dock
+     pointer at all first - `addDock()`'s return value was a local
+     variable in `MainWindow`'s constructor with no accessor anywhere -
+     added `m_vibeCutDock` + `MainWindow::vibeCutDock()`, mirroring the
+     existing `m_timelineDock`/`m_projectBinDock`/etc. pattern. Confirmed
+     live this doesn't reliably float the panel at all - the corrupted
+     placement doesn't yield to it.
+  2. **A one-click recovery action** (`MainWindow::slotShowVibeCut()`,
+     wired to a real "VibeCut" toolbar button via `extraToolBar` in
+     `kdenliveui.rc`): switch to `"editing"` (vibecut's designated home
+     layout) then explicitly `open()`/`raise()` the dock (`close()`/
+     `open()`/`raise()`/`isOpen()` are the real, current KDDockWidgets
+     API - `core/DockWidget.h`). Confirmed live this doesn't fully recover
+     either: once corrupted, the bad placement is **sticky** and survives
+     switching to a *different* layout too, not just further switches on
+     the one that first triggered it - clicking the recovery button
+     produces the same broken state regardless of which layout is active
+     when it's clicked. At one point the chat input box ended up
+     positioned off-screen entirely - a real usability lockout (couldn't
+     type or see what was typed), not just a cosmetic glitch.
+  Given neither mitigation is a real fix, `layout_switch` was pulled from
+  the model's callable tool surface entirely (`layout_list` stays,
+  read-only) rather than leave a real way to get stuck with no reliable
+  chat-based escape - see `TODO.md`. A real fix needs actual hands-on UI
+  debugging (dragging edges, reading KDDockWidgets' own separator/
+  multisplitter placement logic for an item with no saved position), not
+  another guess-and-rebuild cycle.
+
 ## Flatpak build system
 
 - The exact `flatpak-builder` invocation (flags, and module order in
