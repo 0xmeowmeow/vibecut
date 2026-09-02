@@ -26,6 +26,7 @@
 #include <KLocalizedString>
 
 #include <QDir>
+#include <QDirIterator>
 #include <QDomDocument>
 #include <QFile>
 #include <QFileInfo>
@@ -338,6 +339,17 @@ QJsonArray VibeCutTools::schemas() const
                                                   "every track.")}}}}},
         {QStringLiteral("additionalProperties"), false}};
 
+    QJsonObject layoutSwitchSchema{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("properties"),
+         QJsonObject{{QStringLiteral("layout_id"),
+                      QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
+                                  {QStringLiteral("description"),
+                                   QStringLiteral("A real layout id from layout_list, e.g. 'editing', 'effects', "
+                                                  "'color', 'audio', 'logging'.")}}}}},
+        {QStringLiteral("required"), QJsonArray{QStringLiteral("layout_id")}},
+        {QStringLiteral("additionalProperties"), false}};
+
     QJsonObject askUserSchema{
         {QStringLiteral("type"), QStringLiteral("object")},
         {QStringLiteral("properties"),
@@ -413,6 +425,17 @@ QJsonArray VibeCutTools::schemas() const
                                     "closed and which (if any) couldn't be, verified against the timeline's real "
                                     "state afterward, not just whether the call errored.")},
                     {QStringLiteral("input_schema"), closeGapsSchema}},
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("layout_list")},
+                    {QStringLiteral("description"),
+                     QStringLiteral("List available UI layouts, both Kdenlive's built-in workflow pages ('editing', "
+                                    "'effects', 'color', 'audio', 'logging' - each a different dock arrangement "
+                                    "tuned to that stage of editing, like DaVinci Resolve's pages) and any the user "
+                                    "has saved themselves. Read-only - there is currently no tool to switch layouts: "
+                                    "a real KDDockWidgets bug (found live 2026-09-02, see KDENLIVE_INTERNALS.md) can "
+                                    "leave the VibeCut panel itself unusable after a switch, with no reliable "
+                                    "recovery. Tell the user to switch layouts themselves via Kdenlive's own UI if "
+                                    "they ask - don't offer to do it.")},
+                    {QStringLiteral("input_schema"), noArgs}},
         QJsonObject{{QStringLiteral("name"), QStringLiteral("ask_user")},
                     {QStringLiteral("description"),
                      QStringLiteral("Ask the user a clarifying question when an answer would change which clip or "
@@ -464,6 +487,13 @@ QJsonObject VibeCutTools::invoke(const QString &name, const QJsonObject &input)
     if (name == QLatin1String("timeline_close_gaps")) {
         return toolCloseGaps(input);
     }
+    if (name == QLatin1String("layout_list")) {
+        return toolLayoutList();
+    }
+    // layout_switch is deliberately not wired here - see layout_list's
+    // schema description and KDENLIVE_INTERNALS.md. toolLayoutSwitch()
+    // still exists (unreachable from the model right now) for whoever
+    // picks up the real fix.
     if (name == QLatin1String("ask_user")) {
         return toolAskUser(input);
     }
@@ -765,6 +795,85 @@ QJsonObject VibeCutTools::toolCloseGaps(const QJsonObject &input)
                        {QStringLiteral("closed"), closedGaps},
                        {QStringLiteral("failed"), failedGaps},
                        {QStringLiteral("gaps_remaining"), remaining}};
+}
+
+QJsonObject VibeCutTools::toolLayoutList()
+{
+    // No reachable enumeration API (LayoutCollection is private to
+    // LayoutManagement, which MainWindow doesn't expose) - reproduce
+    // LayoutCollection::loadLayouts()'s own file search instead (see
+    // KDENLIVE_INTERNALS.md): same *.json lookup, same id-from-filename
+    // convention, cross-referenced against the real default id list.
+    const QStringList defaultIds = KdenliveSettings::defaultLayoutsOrderValue();
+    QMap<QString, bool> found; // id -> is default
+    const QStringList layoutsFolders =
+        QStandardPaths::locateAll(QStandardPaths::AppLocalDataLocation, QStringLiteral("layouts"), QStandardPaths::LocateDirectory);
+    for (const QString &folderPath : layoutsFolders) {
+        QDirIterator it(folderPath, {QStringLiteral("*.json")}, QDir::Files);
+        while (it.hasNext()) {
+            it.next();
+            const QString id = it.fileInfo().baseName();
+            if (!found.contains(id)) {
+                found.insert(id, defaultIds.contains(id));
+            }
+        }
+    }
+    QJsonArray layouts;
+    for (auto it = found.constBegin(); it != found.constEnd(); ++it) {
+        layouts.append(QJsonObject{{QStringLiteral("id"), it.key()}, {QStringLiteral("is_default"), it.value()}});
+    }
+    return QJsonObject{{QStringLiteral("ok"), true}, {QStringLiteral("layouts"), layouts}};
+}
+
+QJsonObject VibeCutTools::toolLayoutSwitch(const QJsonObject &input)
+{
+    const QString layoutId = input.value(QStringLiteral("layout_id")).toString();
+    if (layoutId.isEmpty()) {
+        return err(QStringLiteral("layout_id must not be empty."));
+    }
+    // Validate against the real list before switching - the one check
+    // available here, since there's no "current layout id" setting to
+    // confirm against afterward (see KDENLIVE_INTERNALS.md: kdockLayout is
+    // the full serialized dock blob, only written on app close, not
+    // live-updated per switch).
+    const QJsonArray known = toolLayoutList().value(QStringLiteral("layouts")).toArray();
+    bool exists = false;
+    for (const QJsonValue &v : known) {
+        if (v.toObject().value(QStringLiteral("id")).toString() == layoutId) {
+            exists = true;
+            break;
+        }
+    }
+    if (!exists) {
+        return err(QStringLiteral("'%1' isn't a known layout id. Call layout_list first.").arg(layoutId));
+    }
+    if (!pCore || !pCore->window()) {
+        return err(QStringLiteral("Kdenlive core isn't available."));
+    }
+    // Every built-in layout was authored before the vibecut dock existed,
+    // so none of their saved KDDockWidgets files have a position for it.
+    // Tried floating the panel out of the way first (setFloating()/
+    // isFloating() via MainWindow::vibeCutDock(), still there for whoever
+    // picks up the real fix) - confirmed live 2026-09-02 it doesn't
+    // reliably work: restoring an unlisted dock doesn't cleanly float or
+    // relocate it, it lands overlapping another dock's actual saved slot
+    // (e.g. the Waveform scope's, on the Color layout) with a corrupted
+    // full-window-sized container - a real KDDockWidgets fallback-placement
+    // bug, not something fixable with a one-line call. Decided (user's
+    // call) to scope around it for now rather than keep chasing it: vibecut
+    // only lives on the layout it starts docked in. Every switch says so
+    // plainly instead of pretending the panel travels with you.
+    // Q_SIGNALS: with no qualifier expands to `public` in Qt, so this is a
+    // direct, ordinary call - Q_EMIT is a documentation-only no-op macro.
+    // Wired Qt::DirectConnection in mainwindow.cpp, so the switch has
+    // already happened synchronously by the time this returns.
+    Q_EMIT pCore->loadLayoutById(layoutId);
+    return QJsonObject{{QStringLiteral("ok"), true},
+                       {QStringLiteral("layout_id"), layoutId},
+                       {QStringLiteral("note"),
+                        QStringLiteral("The VibeCut panel only lives on the layout it started docked in - it may "
+                                       "now be hidden, overlapping another panel, or otherwise hard to reach. "
+                                       "Always tell the user this and that switching back should restore it.")}};
 }
 
 QJsonObject VibeCutTools::toolAskUser(const QJsonObject &input)

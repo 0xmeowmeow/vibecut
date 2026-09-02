@@ -284,8 +284,8 @@ void MainWindow::init()
     auto dockGuides = addDock(i18n("Markers"), QStringLiteral("markers"), pCore->guidesList(), KDDockWidgets::Location_OnRight);
     dockGuides->close();
 
-    auto dockVibeCut = addDock(i18n("VibeCut"), QStringLiteral("vibecut"), new VibeCutDock(this), KDDockWidgets::Location_OnRight);
-    dockVibeCut->close();
+    m_vibeCutDock = addDock(i18n("VibeCut"), QStringLiteral("vibecut"), new VibeCutDock(this), KDDockWidgets::Location_OnRight);
+    m_vibeCutDock->close();
 
     // Screen grab widget
     QWidget *grabWidget = new QWidget(this);
@@ -2119,6 +2119,11 @@ void MainWindow::setupActions()
     addAction(QStringLiteral("delete_all_spaces"), i18n("Remove All Spaces After Cursor"), this, SLOT(slotRemoveAllSpacesInTrack()));
     addAction(QStringLiteral("delete_all_clips"), i18n("Remove All Clips After Cursor"), this, SLOT(slotRemoveAllClipsInTrack()));
     addAction(QStringLiteral("delete_space_all_tracks"), i18n("Remove Space in All Tracks"), this, SLOT(slotRemoveSpaceInAllTracks()));
+    // Recovery action for when a layout switch leaves the VibeCut panel
+    // hidden/overlapping (it only lives on its home layout - see
+    // KDENLIVE_INTERNALS.md). User-requested one-click fix rather than
+    // continuing to chase the underlying KDDockWidgets bug tonight.
+    addAction(QStringLiteral("show_vibecut"), i18n("VibeCut"), this, SLOT(slotShowVibeCut()));
 
     KActionCategory *timelineActions = new KActionCategory(i18n("Tracks"), actionCollection());
     QAction *insertTrack = new QAction(QIcon(), i18nc("@action", "Insert Track…"), this);
@@ -3254,6 +3259,21 @@ void MainWindow::slotInsertSpace()
 void MainWindow::slotRemoveSpace()
 {
     getCurrentTimeline()->controller()->removeSpace(-1, -1, false);
+}
+
+void MainWindow::slotShowVibeCut()
+{
+    // "editing" is vibecut's designated home layout - real, always-present
+    // (see KDENLIVE_INTERNALS.md's UI layouts section), not a dynamically
+    // tracked "layout at launch" (there's no live-updated setting for that -
+    // kdockLayout is only written on app close). Switching alone doesn't
+    // guarantee the dock is visible (it starts closed until the user first
+    // opens it), so open()/raise() explicitly rather than assuming.
+    Q_EMIT pCore->loadLayoutById(QStringLiteral("editing"));
+    if (m_vibeCutDock) {
+        m_vibeCutDock->open();
+        m_vibeCutDock->raise();
+    }
 }
 
 void MainWindow::slotRemoveSpaceInAllTracks()

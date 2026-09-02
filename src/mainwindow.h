@@ -140,6 +140,10 @@ public:
 
     /** @brief Returns a pointer to the current timeline */
     TimelineWidget *getCurrentTimeline() const;
+    /** @brief Returns a pointer to the VibeCut dock, so vibecut's own tool
+     *  code can reach it (e.g. to float it before a layout switch that
+     *  doesn't know about it - see vibecuttools.cpp's layout_switch). */
+    KDDockWidgets::QtWidgets::DockWidget *vibeCutDock() const { return m_vibeCutDock; }
     /** @brief Returns a pointer to the timeline with @uuid */
     TimelineWidget *getTimeline(const QUuid uuid) const;
     void getSequenceProperties(const QUuid &uuid, QMap<QString, QString> &props);
@@ -254,6 +258,7 @@ private:
     KDDockWidgets::QtWidgets::DockWidget *m_projectBinDock{nullptr};
     KDDockWidgets::QtWidgets::DockWidget *m_effectListDock{nullptr};
     KDDockWidgets::QtWidgets::DockWidget *m_compositionListDock{nullptr};
+    KDDockWidgets::QtWidgets::DockWidget *m_vibeCutDock{nullptr};
     TransitionListWidget *m_compositionList{nullptr};
     EffectListWidget *m_effectList2{nullptr};
 
@@ -529,6 +534,13 @@ private Q_SLOTS:
     void slotClipInTimeline(const QString &clipId, const QList<int> &ids);
 
     void slotInsertSpace();
+    /** @brief Recovery action for when a layout switch leaves the VibeCut
+     *  panel hidden or overlapping another dock (it only lives on the
+     *  layout it started docked in - see vibecuttools.cpp's layout_switch).
+     *  Switches to the "editing" layout (vibecut's designated home) and
+     *  explicitly re-opens/raises the dock, since switching alone doesn't
+     *  guarantee visibility. */
+    void slotShowVibeCut();
     void slotRemoveSpace();
     void slotRemoveSpaceInAllTracks();
     void slotRemoveAllSpacesInTrack();

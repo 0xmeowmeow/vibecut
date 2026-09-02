@@ -60,7 +60,7 @@ Window {
 
     Rectangle {
         id: splashContent
-        height: splash.crashRecovery || splash.wasUpgraded ? kdenliveid.height * 15 : kdenliveid.height * 13
+        height: splash.crashRecovery || splash.wasUpgraded ? kdenliveid.height * 30 : kdenliveid.height * 26
         width: height * 2
         radius: 8
         border.width: 2
@@ -143,7 +143,7 @@ Window {
             anchors.right: buttonBar.right
             anchors.rightMargin: 10
             anchors.verticalCenter: buttonBar.verticalCenter
-            text: KI18n.i18n("Kdenlive") + " " + splash.version
+            text: KI18n.i18n("vibecut - powered by Kdenlive") + " " + splash.version
         }
         MouseArea {
             anchors.fill: parent

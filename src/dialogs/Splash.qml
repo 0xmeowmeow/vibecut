@@ -629,7 +629,7 @@ Window {
                     id: kdenliveid
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: KI18n.i18n("Kdenlive") + " " + splash.version
+                    text: KI18n.i18n("vibecut - powered by Kdenlive") + " " + splash.version
                 }
 
             }

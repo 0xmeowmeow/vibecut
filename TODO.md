@@ -116,12 +116,76 @@ feasibility prototype, not the finished feature.
       effect? genuinely just this model's behaviour at low temperature
       too?) rather than leaning on the retry forever.
 
+## UI layouts — started 2026-09-02, layout_switch pulled after real breakage
+
+Added `layout_list`/`layout_switch` tools, then had to pull
+`layout_switch` from the active tool surface the same session (see
+`KDENLIVE_INTERNALS.md` for the full technical trail). `layout_list`
+(read-only) stays. Every built-in layout (`editing`, `effects`, `color`,
+`audio`, `logging`) was authored before the `"vibecut"` dock existed, so
+switching to one leaves our dock's fate up to KDDockWidgets' undefined
+fallback-placement behaviour: confirmed live it doesn't cleanly float or
+relocate the panel, it lands overlapping another dock's *actual* saved
+slot (e.g. the Waveform scope's on the Color layout, found by checking
+`color.json`'s real `itemIndex` list) with a corrupted, full-window-sized
+container - and the corruption turned out to be sticky, surviving further
+switches, not just the first one. Two mitigations tried and both failed
+to fully fix it: floating the panel first (`MainWindow::vibeCutDock()` +
+`setFloating()`/`isFloating()`, still there for whoever picks up the real
+fix), then a one-click **"VibeCut" toolbar button**
+(`MainWindow::slotShowVibeCut()`, `extraToolBar` in `kdenliveui.rc`) to
+switch back to `editing` and re-open/raise the dock - user confirmed live
+it lands in the same broken state regardless of which layout you're
+recovering from. Real, live consequence: at one point the user couldn't
+type in the panel because the input box was hidden off-screen - a genuine
+usability lockout, not a cosmetic bug. User's call: pull the switch tool
+entirely rather than leave a way to get stuck with no reliable escape.
+The toolbar button is left in place (harmless, may still help in a
+less-corrupted case) but isn't a real fix either.
+
+- [ ] **Real fix for the KDDockWidgets fallback-placement bug.** Chasing
+      it further needs actual hands-on UI debugging (dragging edges,
+      reading KDDockWidgets' own separator/multisplitter source), not a
+      quick patch - see `KDENLIVE_INTERNALS.md`'s UI layouts section for
+      what's already been ruled out. Confirmed live 2026-09-02, checking
+      all 5 tabs by hand: the panel is present but broken/overlapping in
+      *every single one* (Logging, Editing, Audio, Effects, Color), not
+      just when leaving Editing - so this isn't "vibecut only survives on
+      its home layout," it's "vibecut is broken almost everywhere,
+      Editing (its actual construction-time dock slot) included once
+      you've switched away and back." The "VibeCut" recovery button and
+      the `layout_switch` removal are damage control, not a fix. User's
+      call: *"There is no easy solution: we are going to have to just
+      work it out and fix it, if not tonight, then tomorrow."*
+- [ ] **Position the vibecut dock sensibly in every built-in layout**, if
+      still worth doing once the item below exists - a DaVinci-Resolve-
+      page-style "this panel always sits here on the Color page" needs one
+      layout JSON at a time (6 files: the 5 pages + `editing_vertical`),
+      not a code fix. May be superseded by dynamic layout generation
+      instead of hand-positioning each static one.
+- [ ] **Give the agent real control over layout composition, not just
+      switching between presets.** The actual point, per the user
+      (2026-09-02): *"let's give full control of the layouts to the
+      agent... it can just draw the whole layout contextually, which is
+      the whole point of something like vibecad."* Concrete example given:
+      user unsure about gain - agent maximizes the video preview, applies
+      the effect, brings up just the gain control, tells the user what to
+      tweak and what to listen/look for. Only when it actually matters for
+      the task, not as a gimmick. Real design work: dynamically generating
+      layout JSON (or driving KDDockWidgets' layout API directly) scoped
+      to what's relevant to the current task, not picking from
+      `layout_list`'s fixed 5. The static layout_list/layout_switch tools
+      above are a real, useful stepping stone (same underlying save/
+      restore mechanism) but this is the actual destination.
+
 ## Explicitly requested, not started
 
-- [ ] **Contextual next-step suggestions.** Replace the flat "Done" state
-      with a Claude/Windsurf-style suggested next action after a tool
-      completes. User's own words: *"done is meaningless... it should
-      prompt for a suggestion for the next thing to do."*
+- [x] **~~Contextual next-step suggestions~~ — done 2026-09-02, at the
+      prompt level.** System prompt now tells the model to always end a
+      finished task with one specific, contextual next step instead of a
+      bare "Done." Not yet the fancier clickable-inline-link version from
+      the `chat-ui-suggestions-as-inline-links` memory - that's still a
+      real UI feature worth doing, this is the words-only first pass.
 - [ ] **v1 plan → confirm → execute-with-checkpoints workflow.** Compound
       requests get a reviewable plan before the agent executes, per
       `DESIGN_SPECS.md` §1 and the `vibecut-v1-plan-then-execute-workflow`
